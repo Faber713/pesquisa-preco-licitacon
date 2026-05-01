@@ -14,7 +14,25 @@ from util import converter_numero, normalizar, palavras_fortes
 
 PNCP_BASE_URL = "https://pncp.gov.br/api/consulta"
 PNCP_DADOS_URL = "https://pncp.gov.br/api/pncp"
-PNCP_MODALIDADES_PADRAO = [8, 6, 7, 9]
+PNCP_MODALIDADES_PADRAO = [8, 6, 7, 9, 5]
+
+
+def _carregar_env_local():
+    if not os.path.exists(".env"):
+        return
+    try:
+        with open(".env", "r", encoding="utf-8") as arquivo:
+            for linha in arquivo:
+                linha = linha.strip()
+                if not linha or linha.startswith("#") or "=" not in linha:
+                    continue
+                chave, valor = linha.split("=", 1)
+                os.environ.setdefault(chave.strip(), valor.strip().strip('"').strip("'"))
+    except OSError:
+        pass
+
+
+_carregar_env_local()
 
 
 def _abrir_json(url, timeout=20):
@@ -90,133 +108,151 @@ def _link_pncp(registro):
     )
 
 
-def buscar_pncp(descricao_busca, limite=20, dias=183, uf="RS", modalidades=None):
-    data_final = date.today()
-    data_inicial = data_final - timedelta(days=dias)
+def buscar_pncp(
+    descricao_busca,
+    limite=20,
+    dias=60,
+    uf="RS",
+    modalidades=None,
+    paginas_por_modalidade=2,
+):
     modalidades = modalidades or PNCP_MODALIDADES_PADRAO
     termos = palavras_fortes(descricao_busca)
     busca_norm = normalizar(descricao_busca)
     fontes = []
     erros = []
+    consultas_ok = 0
+    periodos = []
+    fim_periodo = date.today()
+    dias_restantes = max(1, int(dias))
+    while dias_restantes > 0:
+        tamanho_periodo = min(7, dias_restantes)
+        inicio_periodo = fim_periodo - timedelta(days=tamanho_periodo)
+        periodos.append((inicio_periodo, fim_periodo))
+        fim_periodo = inicio_periodo - timedelta(days=1)
+        dias_restantes -= tamanho_periodo
 
-    for modalidade in modalidades:
-        params = {
-            "dataInicial": data_inicial.strftime("%Y%m%d"),
-            "dataFinal": data_final.strftime("%Y%m%d"),
-            "codigoModalidadeContratacao": modalidade,
-            "pagina": 1,
-            "tamanhoPagina": 10,
-        }
-        if uf:
-            params["uf"] = uf
+    for inicio_periodo, fim_periodo in periodos:
+        for modalidade in modalidades:
+            for pagina in range(1, paginas_por_modalidade + 1):
+                params = {
+                    "dataInicial": inicio_periodo.strftime("%Y%m%d"),
+                    "dataFinal": fim_periodo.strftime("%Y%m%d"),
+                    "codigoModalidadeContratacao": modalidade,
+                    "pagina": pagina,
+                    "tamanhoPagina": 10,
+                }
+                if uf:
+                    params["uf"] = uf
 
-        url = f"{PNCP_BASE_URL}/v1/contratacoes/publicacao?{urllib.parse.urlencode(params)}"
-        try:
-            dados = _abrir_json(url, timeout=8)
-        except Exception as erro:
-            erros.append(f"modalidade {modalidade}: {erro}")
-            continue
-        registros = dados.get("data", []) if isinstance(dados, dict) else []
-
-        for registro in registros:
-            objeto = str(registro.get("objetoCompra", ""))
-            unidade = registro.get("unidadeOrgao") or {}
-            orgao = registro.get("orgaoEntidade") or {}
-            texto_contratacao = " ".join([
-                objeto,
-                str(unidade.get("nomeUnidade", "")),
-                str(orgao.get("razaoSocial", "")),
-                str(registro.get("modalidadeNome", "")),
-            ])
-            texto_norm = normalizar(texto_contratacao)
-
-            if termos and not any(termo in texto_norm for termo in termos):
-                score_contratacao = fuzz.token_set_ratio(busca_norm, texto_norm)
-                if score_contratacao < 45:
+                url = f"{PNCP_BASE_URL}/v1/contratacoes/publicacao?{urllib.parse.urlencode(params)}"
+                try:
+                    dados = _abrir_json(url, timeout=8)
+                except Exception as erro:
+                    erros.append(f"{inicio_periodo:%d/%m/%Y}-{fim_periodo:%d/%m/%Y}, modalidade {modalidade}, pagina {pagina}: {erro}")
                     continue
+                consultas_ok += 1
+                registros = dados.get("data", []) if isinstance(dados, dict) else []
+                if not registros:
+                    break
 
-            try:
-                itens = _listar_itens_pncp(registro)
-            except Exception:
-                itens = []
+                for registro in registros:
+                    objeto = str(registro.get("objetoCompra", ""))
+                    unidade = registro.get("unidadeOrgao") or {}
+                    orgao = registro.get("orgaoEntidade") or {}
+                    texto_contratacao = " ".join([
+                        objeto,
+                        str(unidade.get("nomeUnidade", "")),
+                        str(orgao.get("razaoSocial", "")),
+                        str(registro.get("modalidadeNome", "")),
+                    ])
+                    score_contratacao = fuzz.token_set_ratio(busca_norm, normalizar(texto_contratacao))
 
-            for item in itens:
-                descricao_item = item.get("descricao", "") or objeto
-                score = fuzz.token_set_ratio(busca_norm, normalizar(descricao_item))
-                if score < 55:
-                    continue
-
-                resultados = []
-                if item.get("temResultado"):
                     try:
-                        resultados = _listar_resultados_item_pncp(registro, item.get("numeroItem"))
+                        itens = _listar_itens_pncp(registro)
                     except Exception:
-                        resultados = []
+                        itens = []
 
-                if resultados:
-                    for resultado in resultados:
-                        valor_unitario = converter_numero(resultado.get("valorUnitarioHomologado"))
-                        if not valor_unitario:
+                    for item in itens:
+                        descricao_item = item.get("descricao", "") or objeto
+                        texto_descricao_item = normalizar(descricao_item)
+                        score = fuzz.token_set_ratio(busca_norm, texto_descricao_item)
+                        tokens_item = set(re.findall(r"\w+", texto_descricao_item))
+                        tem_termo_item = any(termo in tokens_item for termo in termos)
+                        if not tem_termo_item and score < 60:
                             continue
-                        fontes.append(
-                            FontePreco(
-                                origem="PNCP",
-                                descricao=descricao_item,
-                                valor_unitario=valor_unitario,
-                                valor_total=converter_numero(resultado.get("valorTotalHomologado")),
-                                quantidade=converter_numero(resultado.get("quantidadeHomologada")),
-                                unidade=item.get("unidadeMedida", ""),
-                                data_referencia=_data_pncp(resultado.get("dataResultado") or item.get("dataAtualizacao")),
-                                fornecedor_nome=resultado.get("nomeRazaoSocialFornecedor", ""),
-                                fornecedor_cnpj=resultado.get("niFornecedor", ""),
-                                orgao=orgao.get("razaoSocial", ""),
-                                municipio=unidade.get("municipioNome", ""),
-                                uf=unidade.get("ufSigla", ""),
-                                link=_link_pncp(registro),
-                                evidencia=(
-                                    f"PNCP compra {registro.get('anoCompra', '')}/"
-                                    f"{registro.get('sequencialCompra', '')}, item {item.get('numeroItem', '')}, "
-                                    f"resultado {resultado.get('sequencialResultado', '')}"
-                                ),
-                                score=round(score, 2),
-                                status_validacao="revisao obrigatoria",
-                                motivos_alerta="Resultado PNCP importado automaticamente; conferir compatibilidade do item antes de anexar ao processo.",
-                            )
-                        )
-                        if len(fontes) >= limite:
-                            return fontes
-                else:
-                    valor_unitario = converter_numero(item.get("valorUnitarioEstimado"))
-                    if not valor_unitario:
-                        continue
-                    fontes.append(
-                        FontePreco(
-                            origem="PNCP",
-                            descricao=descricao_item,
-                            valor_unitario=valor_unitario,
-                            valor_total=converter_numero(item.get("valorTotal")),
-                            quantidade=converter_numero(item.get("quantidade")),
-                            unidade=item.get("unidadeMedida", ""),
-                            data_referencia=_data_pncp(item.get("dataAtualizacao") or registro.get("dataPublicacaoPncp")),
-                            fornecedor_nome="",
-                            fornecedor_cnpj="",
-                            orgao=orgao.get("razaoSocial", ""),
-                            municipio=unidade.get("municipioNome", ""),
-                            uf=unidade.get("ufSigla", ""),
-                            link=_link_pncp(registro),
-                            evidencia=(
-                                f"PNCP compra {registro.get('anoCompra', '')}/"
-                                f"{registro.get('sequencialCompra', '')}, item {item.get('numeroItem', '')}"
-                            ),
-                            score=round(score, 2),
-                            status_validacao="revisao obrigatoria",
-                            motivos_alerta="Preco estimado do PNCP sem resultado homologado; usar somente apos conferencia.",
-                        )
-                    )
-                    if len(fontes) >= limite:
-                        return fontes
 
-    if not fontes and erros:
+                        resultados = []
+                        if item.get("temResultado"):
+                            try:
+                                resultados = _listar_resultados_item_pncp(registro, item.get("numeroItem"))
+                            except Exception:
+                                resultados = []
+
+                        if resultados:
+                            for resultado in resultados:
+                                valor_unitario = converter_numero(resultado.get("valorUnitarioHomologado"))
+                                if not valor_unitario:
+                                    continue
+                                fontes.append(
+                                    FontePreco(
+                                        origem="PNCP",
+                                        descricao=descricao_item,
+                                        valor_unitario=valor_unitario,
+                                        valor_total=converter_numero(resultado.get("valorTotalHomologado")),
+                                        quantidade=converter_numero(resultado.get("quantidadeHomologada")),
+                                        unidade=item.get("unidadeMedida", ""),
+                                        data_referencia=_data_pncp(resultado.get("dataResultado") or item.get("dataAtualizacao")),
+                                        fornecedor_nome=resultado.get("nomeRazaoSocialFornecedor", ""),
+                                        fornecedor_cnpj=resultado.get("niFornecedor", ""),
+                                        orgao=orgao.get("razaoSocial", ""),
+                                        municipio=unidade.get("municipioNome", ""),
+                                        uf=unidade.get("ufSigla", ""),
+                                        link=_link_pncp(registro),
+                                        evidencia=(
+                                            f"PNCP compra {registro.get('anoCompra', '')}/"
+                                            f"{registro.get('sequencialCompra', '')}, item {item.get('numeroItem', '')}, "
+                                            f"resultado {resultado.get('sequencialResultado', '')}"
+                                        ),
+                                        score=round(max(score, score_contratacao), 2),
+                                        status_validacao="revisao obrigatoria",
+                                        motivos_alerta="Resultado PNCP importado automaticamente; conferir compatibilidade do item antes de anexar ao processo.",
+                                    )
+                                )
+                                if len(fontes) >= limite:
+                                    return fontes
+                        else:
+                            valor_unitario = converter_numero(item.get("valorUnitarioEstimado"))
+                            if not valor_unitario:
+                                continue
+                            fontes.append(
+                                FontePreco(
+                                    origem="PNCP",
+                                    descricao=descricao_item,
+                                    valor_unitario=valor_unitario,
+                                    valor_total=converter_numero(item.get("valorTotal")),
+                                    quantidade=converter_numero(item.get("quantidade")),
+                                    unidade=item.get("unidadeMedida", ""),
+                                    data_referencia=_data_pncp(item.get("dataAtualizacao") or registro.get("dataPublicacaoPncp")),
+                                    fornecedor_nome="",
+                                    fornecedor_cnpj="",
+                                    orgao=orgao.get("razaoSocial", ""),
+                                    municipio=unidade.get("municipioNome", ""),
+                                    uf=unidade.get("ufSigla", ""),
+                                    link=_link_pncp(registro),
+                                    evidencia=(
+                                        f"PNCP compra {registro.get('anoCompra', '')}/"
+                                        f"{registro.get('sequencialCompra', '')}, item {item.get('numeroItem', '')}"
+                                    ),
+                                    score=round(max(score, score_contratacao), 2),
+                                    status_validacao="revisao obrigatoria",
+                                    motivos_alerta="Preco estimado do PNCP sem resultado homologado; usar somente apos conferencia.",
+                                )
+                            )
+                            if len(fontes) >= limite:
+                                return fontes
+
+    if not fontes and erros and consultas_ok == 0:
         raise RuntimeError("Nao foi possivel consultar o PNCP. " + " | ".join(erros[:3]))
 
     return fontes
@@ -264,7 +300,28 @@ def buscar_web(descricao_busca, limite=10):
     elif os.getenv("BING_SEARCH_KEY"):
         resultados, aviso = _buscar_bing(query, limite)
     else:
-        return [], "Configure SERPAPI_KEY ou BING_SEARCH_KEY para pesquisa automatica na internet."
+        acesso = agora_iso()
+        links_busca = [
+            ("Google", f"https://www.google.com/search?{urllib.parse.urlencode({'q': query})}"),
+            ("Bing", f"https://www.bing.com/search?{urllib.parse.urlencode({'q': query})}"),
+            ("Mercado Livre", f"https://lista.mercadolivre.com.br/{urllib.parse.quote_plus(descricao_busca)}"),
+        ]
+        fontes_manuais = [
+            FontePreco(
+                origem="Internet",
+                descricao=f"Busca manual na internet - {nome}",
+                valor_unitario=None,
+                valor_total=None,
+                data_referencia=acesso,
+                link=link,
+                evidencia=f"Link de busca gerado em {acesso}; exige conferencia manual e registro do preco encontrado.",
+                score=0,
+                status_validacao="revisao obrigatoria",
+                motivos_alerta="Pesquisa web automatica sem chave de API. Abra o link, confirme preco, fornecedor, frete e data de acesso.",
+            )
+            for nome, link in links_busca[:limite]
+        ]
+        return fontes_manuais, "Configure SERPAPI_KEY ou BING_SEARCH_KEY para extrair resultados e precos automaticamente. Foram gerados links para conferencia manual."
 
     fontes = []
     acesso = agora_iso()
