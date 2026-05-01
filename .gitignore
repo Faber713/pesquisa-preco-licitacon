@@ -1,0 +1,29 @@
+# Arquivos pesados e bases locais
+licitacon.sqlite
+*.sqlite
+*.db
+bases_dados/
+dados/
+*.zip
+
+# Saidas geradas
+resultado_da_busca_item.csv
+*.html
+build/
+dist/
+
+# Python / Streamlit
+__pycache__/
+*.pyc
+.streamlit/secrets.toml
+
+# Ambientes locais
+.venv/
+venv/
+env/
+.env
+
+# Sistema / editor
+.DS_Store
+Thumbs.db
+.vscode/
