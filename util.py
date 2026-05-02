@@ -1,8 +1,8 @@
 import pandas as pd
 import unicodedata
 import re
-from tkinter import Tk
-from tkinter.filedialog import askopenfilename
+#from tkinter import Tk
+#from tkinter.filedialog import askopenfilename
 
 from config import PALAVRAS_FRACAS
 
@@ -45,17 +45,18 @@ def lista_normalizada(lista):
 # =========================
 
 def escolher_arquivo():
-    Tk().withdraw()
-    arquivo = askopenfilename(
-        title="Selecione o arquivo CSV do LicitaCon",
-        filetypes=[("Arquivos CSV", "*.csv")]
-    )
+     return None
+    #Tk().withdraw()
+   # arquivo = askopenfilename(
+      #  title="Selecione o arquivo CSV do LicitaCon",
+        #filetypes=[("Arquivos CSV", "*.csv")]
+   # )
 
-    if not arquivo:
-        print("Nenhum arquivo selecionado.")
-        return None
+    #if not arquivo:
+      #  print("Nenhum arquivo selecionado.")
+       # return None
 
-    return arquivo
+   # return arquivo
 
 
 # =========================
