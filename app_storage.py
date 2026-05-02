@@ -81,6 +81,17 @@ def inicializar_app_db():
                 criado_em TEXT NOT NULL,
                 FOREIGN KEY (pesquisa_id) REFERENCES pesquisas(id)
             );
+
+            CREATE TABLE IF NOT EXISTS usuarios (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nome TEXT NOT NULL,
+                email TEXT NOT NULL UNIQUE,
+                senha_hash TEXT NOT NULL,
+                perfil TEXT NOT NULL DEFAULT 'admin',
+                ativo INTEGER NOT NULL DEFAULT 1,
+                criado_em TEXT NOT NULL,
+                ultimo_login TEXT
+            );
             """
         )
 
@@ -161,6 +172,88 @@ def listar_cotacoes_por_descricao(descricao):
                 (termo,),
             ).fetchall()
         ]
+
+
+def contar_usuarios():
+    with conectar_app_db() as con:
+        row = con.execute("SELECT COUNT(*) AS total FROM usuarios").fetchone()
+        return int(row["total"] or 0)
+
+
+def listar_usuarios():
+    with conectar_app_db() as con:
+        return [
+            dict(row)
+            for row in con.execute(
+                """
+                SELECT id, nome, email, perfil, ativo, criado_em, ultimo_login
+                FROM usuarios
+                ORDER BY nome, email
+                """
+            ).fetchall()
+        ]
+
+
+def criar_usuario(nome, email, senha_hash, perfil="admin", ativo=True):
+    with conectar_app_db() as con:
+        con.execute(
+            """
+            INSERT INTO usuarios
+            (nome, email, senha_hash, perfil, ativo, criado_em)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                nome.strip(),
+                email.strip().lower(),
+                senha_hash,
+                perfil.strip() or "admin",
+                1 if ativo else 0,
+                agora_iso(),
+            ),
+        )
+
+
+def buscar_usuario_por_email(email):
+    with conectar_app_db() as con:
+        row = con.execute(
+            "SELECT * FROM usuarios WHERE lower(email) = lower(?) LIMIT 1",
+            (email.strip(),),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def atualizar_usuario(usuario_id, nome, email, perfil, ativo):
+    with conectar_app_db() as con:
+        con.execute(
+            """
+            UPDATE usuarios
+            SET nome = ?, email = ?, perfil = ?, ativo = ?
+            WHERE id = ?
+            """,
+            (
+                nome.strip(),
+                email.strip().lower(),
+                perfil.strip() or "usuario",
+                1 if ativo else 0,
+                usuario_id,
+            ),
+        )
+
+
+def atualizar_senha_usuario(usuario_id, senha_hash):
+    with conectar_app_db() as con:
+        con.execute(
+            "UPDATE usuarios SET senha_hash = ? WHERE id = ?",
+            (senha_hash, usuario_id),
+        )
+
+
+def registrar_login_usuario(usuario_id):
+    with conectar_app_db() as con:
+        con.execute(
+            "UPDATE usuarios SET ultimo_login = ? WHERE id = ?",
+            (agora_iso(), usuario_id),
+        )
 
 
 def salvar_pesquisa(descricao, responsavel, parametros, metodo_escolhido, justificativas, fontes):

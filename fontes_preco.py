@@ -87,7 +87,9 @@ def fonte_para_resultado(fonte):
         "grupo_regional": "",
         "quantidade_fora": False,
         "avisos_tecnicos": fonte.get("motivos_alerta", ""),
+        "status_validacao": fonte.get("status_validacao", ""),
         "linha_csv": "",
+        "evidencia": fonte.get("evidencia", ""),
     }
 
 

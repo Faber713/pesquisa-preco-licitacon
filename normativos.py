@@ -113,7 +113,7 @@ def _parse_cmap(cmap_bytes):
     texto = cmap_bytes.decode("latin1", errors="ignore")
     mapa = {}
 
-    for match in re.finditer(r"<([0-9A-Fa-f]{4})>\s+<([0-9A-Fa-f]{4})>\s+\[(.*?)\]", texto, re.S):
+    for match in re.finditer(r"<([0-9A-Fa-f]{4})>\s*<([0-9A-Fa-f]{4})>\s*\[(.*?)\]", texto, re.S):
         inicio = int(match.group(1), 16)
         valores = re.findall(r"<([0-9A-Fa-f]+)>", match.group(3))
         for indice, valor in enumerate(valores):
@@ -122,17 +122,26 @@ def _parse_cmap(cmap_bytes):
                 for pos in range(0, len(valor), 4)
             )
 
-    for match in re.finditer(r"<([0-9A-Fa-f]{4})>\s+<([0-9A-Fa-f]{4})>\s+<([0-9A-Fa-f]+)>", texto):
+    for match in re.finditer(r"<([0-9A-Fa-f]{4})>\s*<([0-9A-Fa-f]{4})>\s*<([0-9A-Fa-f]+)>", texto):
         inicio = int(match.group(1), 16)
         fim = int(match.group(2), 16)
         destino = int(match.group(3), 16)
         for codigo in range(inicio, fim + 1):
             mapa.setdefault(codigo, chr(destino + (codigo - inicio)))
 
+    for match in re.finditer(r"<([0-9A-Fa-f]{4})>\s*<([0-9A-Fa-f]+)>", texto):
+        codigo = int(match.group(1), 16)
+        valor = match.group(2)
+        mapa.setdefault(
+            codigo,
+            "".join(chr(int(valor[pos:pos + 4], 16)) for pos in range(0, len(valor), 4)),
+        )
+
     return mapa
 
 
 def _decode_hex_pdf(hex_texto, cmap):
+    hex_texto = re.sub(r"\s+", "", hex_texto)
     saida = []
     passo = 4 if cmap else 2
     for pos in range(0, len(hex_texto), passo):
@@ -162,7 +171,7 @@ def _decode_literal_pdf(valor):
 
 def _extrair_strings_pdf_array(conteudo_array, cmap):
     partes = []
-    for token in re.finditer(r"<([0-9A-Fa-f]+)>|\(((?:\\.|[^\\)])*)\)", conteudo_array, re.S):
+    for token in re.finditer(r"<([0-9A-Fa-f\s]+)>|\(((?:\\.|[^\\)])*)\)", conteudo_array, re.S):
         if token.group(1):
             partes.append(_decode_hex_pdf(token.group(1), cmap))
         else:
@@ -170,65 +179,151 @@ def _extrair_strings_pdf_array(conteudo_array, cmap):
     return "".join(partes)
 
 
+def _refs_pdf(texto):
+    return [int(ref) for ref in re.findall(r"(\d+)\s+\d+\s+R", texto)]
+
+
+def _objeto_catalogo_pdf(data):
+    for match in re.finditer(rb"\b(\d+)\s+0\s+obj(.*?)endobj", data, re.S):
+        corpo = match.group(2)
+        if re.search(rb"/Type\s*/Catalog\b", corpo):
+            return int(match.group(1)), corpo
+    return None, b""
+
+
+def _coletar_paginas_pdf(data, numero_objeto, visitados=None):
+    visitados = visitados or set()
+    if numero_objeto in visitados:
+        return []
+    visitados.add(numero_objeto)
+
+    corpo = _obj_pdf(data, numero_objeto).decode("latin1", errors="ignore")
+    if not corpo:
+        return []
+
+    if re.search(r"/Type\s*/Pages\b", corpo) or "/Kids" in corpo:
+        match_kids = re.search(r"/Kids\s*\[(.*?)\]", corpo, re.S)
+        if not match_kids:
+            return []
+        paginas = []
+        for filho in _refs_pdf(match_kids.group(1)):
+            paginas.extend(_coletar_paginas_pdf(data, filho, visitados))
+        return paginas
+
+    if re.search(r"/Type\s*/Page\b", corpo):
+        return [numero_objeto]
+
+    return []
+
+
+def _fontes_pdf(data, corpo_pagina):
+    fontes = {}
+    for bloco_fontes in re.findall(r"/Font\s*<<(.*?)>>", corpo_pagina, re.S):
+        for nome_fonte, numero_objeto in re.findall(r"/([A-Za-z0-9]+)\s+(\d+)\s+\d+\s+R", bloco_fontes):
+            corpo_fonte = _obj_pdf(data, int(numero_objeto)).decode("latin1", errors="ignore")
+            match_unicode = re.search(r"/ToUnicode\s+(\d+)\s+\d+\s+R", corpo_fonte)
+            fontes[nome_fonte] = {}
+            if match_unicode:
+                fontes[nome_fonte] = _parse_cmap(
+                    _stream_pdf(_obj_pdf(data, int(match_unicode.group(1))))
+                )
+    return fontes
+
+
+def _conteudos_pagina_pdf(corpo_pagina):
+    match_conteudo = re.search(r"/Contents\s+(?:\[(.*?)\]|(\d+)\s+\d+\s+R)", corpo_pagina, re.S)
+    if not match_conteudo:
+        return []
+    if match_conteudo.group(1):
+        return _refs_pdf(match_conteudo.group(1))
+    return [int(match_conteudo.group(2))]
+
+
+def _extrair_texto_stream_pdf(conteudo, fontes):
+    partes = []
+    fonte_atual = ""
+
+    token_re = re.compile(
+        r"/(?P<fonte>[A-Za-z0-9]+)\s+[0-9.]+\s+Tf|"
+        r"(?P<tdx>-?\d+(?:\.\d+)?)\s+(?P<tdy>-?\d+(?:\.\d+)?)\s+T[dD]|"
+        r"(?P<tm>(?:-?\d+(?:\.\d+)?\s+){5}-?\d+(?:\.\d+)?)\s+Tm|"
+        r"<(?P<hex>[0-9A-Fa-f\s]+)>\s*Tj|"
+        r"\(((?:\\.|[^\\)])*)\)\s*Tj|"
+        r"\[(?P<array>.*?)\]\s*TJ|"
+        r"(?P<linha>T\*)",
+        re.S,
+    )
+
+    def adicionar_espaco():
+        if partes and partes[-1] not in {" ", "\n"}:
+            partes.append(" ")
+
+    def adicionar_quebra():
+        while partes and partes[-1] == " ":
+            partes.pop()
+        if partes and partes[-1] != "\n":
+            partes.append("\n")
+
+    for bloco in re.findall(r"BT(.*?)ET", conteudo, re.S):
+        for token in token_re.finditer(bloco):
+            if token.group("fonte"):
+                fonte_atual = token.group("fonte")
+                continue
+
+            if token.group("tdx") is not None:
+                dx = float(token.group("tdx"))
+                dy = float(token.group("tdy"))
+                if dy < -1:
+                    adicionar_quebra()
+                elif dx > 1:
+                    adicionar_espaco()
+                continue
+
+            if token.group("tm") or token.group("linha"):
+                adicionar_quebra()
+                continue
+
+            cmap = fontes.get(fonte_atual, {})
+            if token.group("hex"):
+                partes.append(_decode_hex_pdf(token.group("hex"), cmap))
+            elif token.group(6):
+                partes.append(_decode_literal_pdf(token.group(6)))
+            elif token.group("array"):
+                partes.append(_extrair_strings_pdf_array(token.group("array"), cmap))
+
+        adicionar_quebra()
+
+    texto = "".join(partes)
+    linhas = [re.sub(r"[ \t]+", " ", linha).strip() for linha in texto.splitlines()]
+    return "\n".join(linha for linha in linhas if linha)
+
+
 def _extrair_texto_pdf(data):
-    paginas_obj = _obj_pdf(data, 2).decode("latin1", errors="ignore")
-    match_kids = re.search(r"/Kids\s*\[(.*?)\]", paginas_obj, re.S)
-    if not match_kids:
+    _catalogo_numero, catalogo = _objeto_catalogo_pdf(data)
+    match_paginas = re.search(rb"/Pages\s+(\d+)\s+\d+\s+R", catalogo)
+    if match_paginas:
+        paginas = _coletar_paginas_pdf(data, int(match_paginas.group(1)))
+    else:
+        paginas_obj = _obj_pdf(data, 2).decode("latin1", errors="ignore")
+        match_kids = re.search(r"/Kids\s*\[(.*?)\]", paginas_obj, re.S)
+        paginas = [int(x) for x in re.findall(r"(\d+)\s+\d+\s+R", match_kids.group(1))] if match_kids else []
+
+    if not paginas:
         return ""
 
-    paginas = [int(x) for x in re.findall(r"(\d+)\s+0\s+R", match_kids.group(1))]
     partes = []
 
     for pagina in paginas:
         corpo_pagina_bytes = _obj_pdf(data, pagina)
         corpo_pagina = corpo_pagina_bytes.decode("latin1", errors="ignore")
-
-        fontes = {}
-        match_fontes = re.search(r"/Font\s*<<(.*?)>>", corpo_pagina, re.S)
-        if match_fontes:
-            for nome_fonte, numero_objeto in re.findall(r"/(F\d+)\s+(\d+)\s+0\s+R", match_fontes.group(1)):
-                corpo_fonte = _obj_pdf(data, int(numero_objeto)).decode("latin1", errors="ignore")
-                match_unicode = re.search(r"/ToUnicode\s+(\d+)\s+0\s+R", corpo_fonte)
-                fontes[nome_fonte] = {}
-                if match_unicode:
-                    fontes[nome_fonte] = _parse_cmap(
-                        _stream_pdf(_obj_pdf(data, int(match_unicode.group(1))))
-                    )
-
-        match_conteudo = re.search(r"/Contents\s+(?:\[(.*?)\]|(\d+)\s+0\s+R)", corpo_pagina, re.S)
-        if not match_conteudo:
-            continue
-
-        conteudos = []
-        if match_conteudo.group(1):
-            conteudos = [int(x) for x in re.findall(r"(\d+)\s+0\s+R", match_conteudo.group(1))]
-        elif match_conteudo.group(2):
-            conteudos = [int(match_conteudo.group(2))]
-
-        texto_pagina = []
+        fontes = _fontes_pdf(data, corpo_pagina)
+        conteudos = _conteudos_pagina_pdf(corpo_pagina)
 
         for numero_conteudo in conteudos:
             conteudo = _stream_pdf(_obj_pdf(data, numero_conteudo)).decode("latin1", errors="ignore")
-            fonte_atual = ""
-
-            for bloco in re.findall(r"BT(.*?)ET", conteudo, re.S):
-                for token in re.finditer(
-                    r"/(F\d+)\s+[0-9.]+\s+Tf|<([0-9A-Fa-f]+)>\s*Tj|\(((?:\\.|[^\\)])*)\)\s*Tj|\[(.*?)\]\s*TJ",
-                    bloco,
-                    re.S,
-                ):
-                    cmap = fontes.get(fonte_atual, {})
-                    if token.group(1):
-                        fonte_atual = token.group(1)
-                    elif token.group(2):
-                        texto_pagina.append(_decode_hex_pdf(token.group(2), cmap))
-                    elif token.group(3):
-                        texto_pagina.append(_decode_literal_pdf(token.group(3)))
-                    elif token.group(4):
-                        texto_pagina.append(_extrair_strings_pdf_array(token.group(4), cmap))
-                texto_pagina.append("\n")
-
-        partes.append("".join(texto_pagina))
+            texto_conteudo = _extrair_texto_stream_pdf(conteudo, fontes)
+            if texto_conteudo:
+                partes.append(texto_conteudo)
 
     return "\n".join(partes)
 

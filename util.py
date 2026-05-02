@@ -67,6 +67,11 @@ def converter_numero(valor):
         if valor is None:
             return None
 
+        if isinstance(valor, (int, float)) and not isinstance(valor, bool):
+            if pd.isna(valor):
+                return None
+            return float(valor)
+
         texto = str(valor).replace("R$", "").strip()
 
         if texto == "" or texto.lower() == "nan":
@@ -156,6 +161,8 @@ def termos_compativeis(termo, texto_norm):
 
         for p in palavras:
             rp = radical_simples(p)
+            if len(rp) < 5:
+                continue
 
             if rp.startswith(rad) or rad.startswith(rp):
                 return True

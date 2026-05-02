@@ -13,9 +13,10 @@ from html import escape
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
+from rapidfuzz import fuzz
 
 from config import MIN_RESULTADOS_DESEJADOS, LINK_BASE_LICITACON
-from util import converter_numero, normalizar, palavras_fortes
+from util import converter_numero, normalizar, palavras_fortes, termos_compativeis
 from ia_criterios import extrair_criterios_com_ia
 from busca import buscar_item, juntar_resultados
 from html_saida import salvar_html
@@ -31,23 +32,30 @@ from normativos import (
     registrar_perfil_normativo,
 )
 from app_storage import (
+    atualizar_senha_usuario,
+    atualizar_usuario,
     cadastrar_cotacao,
     cadastrar_fornecedor,
+    criar_usuario,
     inicializar_app_db,
     listar_fornecedores,
+    listar_usuarios,
     salvar_pesquisa,
 )
 from fontes_preco import (
+    FontePreco,
     fonte_para_resultado,
     fontes_para_dataframe_linhas,
     resultado_licitacon_para_fonte,
 )
 from provedores_precos import buscar_fornecedores, buscar_pncp, buscar_web
+from app_auth import exigir_login, gerar_hash_senha
 
 
 CAMINHO_SQLITE = Path("licitacon.sqlite")
 MAX_CANDIDATOS_SQLITE = 15000
 MAX_CANDIDATOS_LOTE = 5000
+MUNICIPIO_PROPRIO_PADRAO = "Joia"
 TABELAS_SQLITE_BUSCA = {
     "base_pesquisa": {
         "rotulo": "LicitaCon geral",
@@ -81,6 +89,10 @@ st.set_page_config(
     page_icon=":mag:",
     layout="wide"
 )
+
+usuario_logado = exigir_login()
+if not usuario_logado:
+    st.stop()
 
 
 def carregar_csv(arquivo_enviado):
@@ -154,11 +166,62 @@ def montar_termos_sqlite(descricao_busca, criterios):
     return termos[:10]
 
 
+def separar_descricao_tecnica(descricao):
+    texto = re.sub(r"\s+", " ", str(descricao or "")).strip()
+    if not texto:
+        return "", ""
+
+    exigencias = []
+    generica = texto
+
+    padroes = [
+        r"\bref(?:er[eê]ncia)?\.?\s*[:\-]?\s*[^,;]+",
+        r"\bmodelo\s*[:\-]?\s*[^,;]+",
+        r"\bmarca\s*[:\-]?\s*[^,;]+",
+        r"\bmarca/modelo\s*[:\-]?\s*[^,;]+",
+    ]
+
+    for padrao in padroes:
+        for match in re.finditer(padrao, generica, flags=re.IGNORECASE):
+            trecho = match.group(0).strip(" -;,")
+            if trecho and trecho not in exigencias:
+                exigencias.append(trecho)
+        generica = re.sub(padrao, " ", generica, flags=re.IGNORECASE)
+
+    # Mantem caracteristicas tecnicas pesquisaveis, mas remove excesso de pontuacao.
+    generica = re.sub(r"\bREFER[ÊE]NCIA\b", " ", generica, flags=re.IGNORECASE)
+    generica = re.sub(r"\bMINIPA\b\s*[A-Z]{1,4}\s*-?\s*\d{2,6}", " ", generica, flags=re.IGNORECASE)
+    generica = re.sub(r"\s+", " ", generica)
+    generica = generica.strip(" -;,.:")
+
+    if not generica:
+        generica = texto
+
+    exigencia = "; ".join(dict.fromkeys(exigencias))
+    return generica, exigencia
+
+
+def montar_item_pesquisa(item, descricao, quantidade=None, unidade="", descricao_generica=None, exigencia_tecnica=None):
+    descricao = re.sub(r"\s+", " ", str(descricao or "")).strip()
+    generica_sugerida, exigencia_sugerida = separar_descricao_tecnica(descricao)
+    generica = re.sub(r"\s+", " ", str(descricao_generica or generica_sugerida).strip())
+    exigencia = re.sub(r"\s+", " ", str(exigencia_tecnica or exigencia_sugerida).strip())
+    return {
+        "item": item,
+        "descricao": descricao,
+        "descricao_generica": generica or descricao,
+        "exigencia_tecnica": exigencia,
+        "quantidade": quantidade,
+        "unidade": unidade,
+    }
+
+
 def carregar_candidatos_sqlite(
     descricao_busca,
     criterios,
     limite=MAX_CANDIDATOS_SQLITE,
-    tabela="base_pesquisa"
+    tabela="base_pesquisa",
+    excluir_municipio=MUNICIPIO_PROPRIO_PADRAO,
 ):
     if tabela not in TABELAS_SQLITE_BUSCA:
         raise ValueError(f"Tabela de busca nao permitida: {tabela}")
@@ -186,6 +249,27 @@ def carregar_candidatos_sqlite(
     parametros = parametros_filtro + parametros_relevancia + [limite]
 
     campos_extras = TABELAS_SQLITE_BUSCA[tabela]["campos_extras"]
+
+    filtro_municipio = ""
+    parametros_excluir = []
+    if excluir_municipio:
+        variantes_municipio = {
+            excluir_municipio.lower(),
+            normalizar(excluir_municipio).lower(),
+        }
+        if normalizar(excluir_municipio) == "joia":
+            variantes_municipio.add("jóia")
+
+        colunas_exclusao = ["orgao"]
+        if tabela == "base_historica_municipios":
+            colunas_exclusao.append("municipio")
+
+        filtros = []
+        for coluna in colunas_exclusao:
+            for variante in sorted(variantes_municipio):
+                filtros.append(f"lower(COALESCE({coluna}, '')) NOT LIKE ?")
+                parametros_excluir.append(f"%{variante}%")
+        filtro_municipio = " AND " + " AND ".join(filtros)
 
     sql = f"""
         SELECT
@@ -216,6 +300,7 @@ def carregar_candidatos_sqlite(
           AND CAST(REPLACE(valor_unitario, ',', '.') AS REAL) > 0
           AND vencedor IS NOT NULL
           AND TRIM(vencedor) NOT IN ('', '-', '--', 'nan', 'None', 'NULL')
+          {filtro_municipio}
         ORDER BY
             _relevancia DESC,
             CASE
@@ -227,7 +312,7 @@ def carregar_candidatos_sqlite(
     """
 
     with sqlite3.connect(CAMINHO_SQLITE) as con:
-        return pd.read_sql_query(sql, con, params=parametros, dtype=str)
+        return pd.read_sql_query(sql, con, params=parametros_filtro + parametros_relevancia + parametros_excluir + [limite], dtype=str)
 
 
 def executar_pesquisa(
@@ -433,11 +518,7 @@ def _linhas_texto_para_itens(linhas):
         if len(normalizar(descricao)) < 8:
             continue
 
-        itens.append({
-            "item": item,
-            "descricao": descricao,
-            "quantidade": quantidade,
-        })
+        itens.append(montar_item_pesquisa(item, descricao, quantidade))
 
     return pd.DataFrame(itens)
 
@@ -518,12 +599,7 @@ def _linhas_tabela_pdf_para_itens(linhas):
         descricao = re.sub(r"([(-])\s+", r"\1", descricao).strip(" -;")
 
         if len(normalizar(descricao)) >= 8:
-            itens.append({
-                "item": item,
-                "descricao": descricao,
-                "quantidade": quantidade,
-                "unidade": unidade,
-            })
+            itens.append(montar_item_pesquisa(item, descricao, quantidade, unidade))
 
         i = max(j, i + 1)
 
@@ -595,7 +671,13 @@ def carregar_planilha_itens(arquivo_enviado):
     df = df.dropna(how="all")
 
     coluna_item = localizar_coluna(df, ["item", "nr item", "numero item", "n"])
-    coluna_descricao = localizar_coluna(df, [
+    coluna_descricao_generica = localizar_coluna(df, [
+        "descricao generica",
+        "descricao para pesquisa",
+        "descrição genérica",
+        "descrição para pesquisa",
+    ])
+    coluna_descricao = coluna_descricao_generica or localizar_coluna(df, [
         "descricao",
         "descricao do item",
         "objeto",
@@ -603,11 +685,30 @@ def carregar_planilha_itens(arquivo_enviado):
         "produto",
         "especificacao",
     ])
+    coluna_descricao_original = localizar_coluna(df, [
+        "descricao completa",
+        "descricao original",
+        "descricao detalhada",
+        "especificacao completa",
+    ])
+    coluna_exigencia = localizar_coluna(df, [
+        "exigencia tecnica",
+        "exigencias tecnicas",
+        "especificacao tecnica",
+        "requisitos tecnicos",
+        "observacao tecnica",
+    ])
     coluna_quantidade = localizar_coluna(df, [
         "quantidade",
         "qtd",
         "qtde",
         "quant",
+    ])
+    coluna_unidade = localizar_coluna(df, [
+        "unidade",
+        "un",
+        "und",
+        "unid",
     ])
 
     if coluna_descricao is None:
@@ -634,7 +735,13 @@ def carregar_planilha_itens(arquivo_enviado):
             df = pd.read_excel(BytesIO(bytes_arquivo), header=melhor_linha, dtype=str)
             df = df.dropna(how="all")
             coluna_item = localizar_coluna(df, ["item", "nr item", "numero item", "n"])
-            coluna_descricao = localizar_coluna(df, [
+            coluna_descricao_generica = localizar_coluna(df, [
+                "descricao generica",
+                "descricao para pesquisa",
+                "descrição genérica",
+                "descrição para pesquisa",
+            ])
+            coluna_descricao = coluna_descricao_generica or localizar_coluna(df, [
                 "descricao",
                 "descricao do item",
                 "objeto",
@@ -642,11 +749,30 @@ def carregar_planilha_itens(arquivo_enviado):
                 "produto",
                 "especificacao",
             ])
+            coluna_descricao_original = localizar_coluna(df, [
+                "descricao completa",
+                "descricao original",
+                "descricao detalhada",
+                "especificacao completa",
+            ])
+            coluna_exigencia = localizar_coluna(df, [
+                "exigencia tecnica",
+                "exigencias tecnicas",
+                "especificacao tecnica",
+                "requisitos tecnicos",
+                "observacao tecnica",
+            ])
             coluna_quantidade = localizar_coluna(df, [
                 "quantidade",
                 "qtd",
                 "qtde",
                 "quant",
+            ])
+            coluna_unidade = localizar_coluna(df, [
+                "unidade",
+                "un",
+                "und",
+                "unid",
             ])
 
     if coluna_descricao is None:
@@ -654,20 +780,506 @@ def carregar_planilha_itens(arquivo_enviado):
 
     itens = []
     for indice, row in df.iterrows():
-        descricao = str(row.get(coluna_descricao, "")).strip()
+        descricao_generica = (
+            str(row.get(coluna_descricao_generica, "")).strip()
+            if coluna_descricao_generica
+            else ""
+        )
+        descricao_original = (
+            str(row.get(coluna_descricao_original, "")).strip()
+            if coluna_descricao_original
+            else str(row.get(coluna_descricao, "")).strip()
+        )
+        exigencia_tecnica = (
+            str(row.get(coluna_exigencia, "")).strip()
+            if coluna_exigencia
+            else ""
+        )
+        descricao = descricao_original or descricao_generica
         if not descricao or descricao.lower() in {"nan", "none"}:
             continue
 
         quantidade = converter_numero(row.get(coluna_quantidade, "")) if coluna_quantidade else None
+        unidade = str(row.get(coluna_unidade, "")).strip() if coluna_unidade else ""
         item = str(row.get(coluna_item, indice + 1)).strip() if coluna_item else str(len(itens) + 1)
 
-        itens.append({
-            "item": item,
-            "descricao": descricao,
-            "quantidade": quantidade,
-        })
+        itens.append(montar_item_pesquisa(
+            item,
+            descricao,
+            quantidade,
+            unidade,
+            descricao_generica=descricao_generica,
+            exigencia_tecnica=exigencia_tecnica,
+        ))
 
     return pd.DataFrame(itens)
+
+
+def _ler_planilha_com_cabecalho_flexivel(bytes_arquivo):
+    df = pd.read_excel(BytesIO(bytes_arquivo), dtype=str)
+    df = df.dropna(how="all")
+    if len(df.columns) > 1 and any(normalizar(col) for col in df.columns):
+        return df
+
+    bruto = pd.read_excel(BytesIO(bytes_arquivo), header=None, dtype=str)
+    melhor_linha = 0
+    melhor_pontos = -1
+    palavras_cabecalho = {
+        "descricao", "item", "produto", "material", "objeto",
+        "valor", "unitario", "homologado", "fornecedor", "vencedor",
+        "situacao", "status", "resultado", "quantidade", "qtd",
+    }
+    for indice, row in bruto.head(30).iterrows():
+        texto = " ".join(normalizar(valor) for valor in row.fillna("").tolist())
+        pontos = sum(1 for palavra in palavras_cabecalho if palavra in texto)
+        if pontos > melhor_pontos:
+            melhor_pontos = pontos
+            melhor_linha = indice
+
+    df = pd.read_excel(BytesIO(bytes_arquivo), header=melhor_linha, dtype=str)
+    return df.dropna(how="all")
+
+
+def _status_historico_permite_preco(status):
+    status_norm = normalizar(status)
+    if not status_norm:
+        return True
+    bloqueios = ["deserto", "fracassado", "cancelado", "anulado", "revogado", "sem vencedor"]
+    return not any(bloqueio in status_norm for bloqueio in bloqueios)
+
+
+UNIDADES_ATA = (
+    "UN", "UND", "UNID", "UNIDADE", "UNIDADES", "CX", "PAC", "PCT", "PC",
+    "PECA", "PECAS", "PAR", "JG", "JOGO", "KIT", "M", "MT", "M2", "M3",
+    "KG", "G", "L", "LT", "ROLO", "BARRA", "SERV", "SV", "SVÇ", "H",
+)
+REGEX_MOEDA_ATA = r"R\$\s*[\d.]+,\d{2,4}"
+REGEX_VALOR_TABELA_ATA = r"(?<!\d)(?:\d{1,3}(?:\.\d{3})+|\d+),\d{2,4}(?!\d)"
+
+
+def _linha_ignorada_ata(linha):
+    texto_norm = normalizar(linha)
+    if not texto_norm:
+        return True
+    ignorar = {
+        "codigo",
+        "produto",
+        "modelo",
+        "marca fabricante",
+        "qtde",
+        "valor unitario",
+        "valor total",
+    }
+    if texto_norm in ignorar:
+        return True
+    return any(
+        trecho in texto_norm
+        for trecho in [
+            "autenticidade do documento",
+            "documento gerado eletronicamente",
+            "codigo verificador",
+            "vencedores do processo",
+            "total do vencedor",
+        ]
+    )
+
+
+def _metadados_fornecedor_ata(linha):
+    fornecedor = linha.split("| Tipo:", 1)[0].strip()
+    fornecedor = re.sub(r"\s+", " ", fornecedor)
+    cnpj = ""
+    municipio = ""
+    uf = ""
+
+    match_cnpj = re.search(r"Documento\s+([\d./\-\s]{11,24})", linha, flags=re.I)
+    if match_cnpj:
+        cnpj = re.sub(r"\s+", "", match_cnpj.group(1)).strip(" -")
+
+    match_municipio = re.search(r"Munic[ií]pio\s*:\s*([^-]+)", linha, flags=re.I)
+    if match_municipio:
+        municipio = match_municipio.group(1).strip()
+
+    match_uf = re.search(r"\bUF\s*:\s*([A-Z]{2})\b", linha)
+    if match_uf:
+        uf = match_uf.group(1)
+
+    return {
+        "fornecedor_nome": fornecedor,
+        "fornecedor_cnpj": cnpj,
+        "municipio": municipio,
+        "uf": uf,
+    }
+
+
+def _status_ata(texto):
+    texto_norm = normalizar(texto)
+    for status in ["deserto", "fracassado", "cancelado", "anulado", "revogado", "sem vencedor"]:
+        if status in texto_norm:
+            return status
+    if "vencedor" in texto_norm or re.search(REGEX_MOEDA_ATA, texto, flags=re.I):
+        return "homologado"
+    return ""
+
+
+def _linha_inicio_item_ata(linha):
+    if re.match(r"^\d{3,6}\b", linha):
+        return True
+    return re.match(r"^item\s+\d{1,6}\b", linha, flags=re.I) is not None
+
+
+def _linha_numero_inteiro(linha):
+    return re.fullmatch(r"\d{1,6}", str(linha or "").strip()) is not None
+
+
+def _linha_quantidade_ata(linha):
+    return re.fullmatch(r"\d+(?:[.,]\d+)?", str(linha or "").strip()) is not None
+
+
+def _linha_unidade_ata(linha):
+    return normalizar(linha).upper() in {normalizar(unidade).upper() for unidade in UNIDADES_ATA}
+
+
+def _fontes_ata_tabela_sequencial(nome_arquivo, linhas):
+    fontes = []
+    i = 0
+    while i < len(linhas) - 5:
+        item = linhas[i].strip()
+        codigo = linhas[i + 1].strip()
+        qtd = linhas[i + 2].strip()
+        unidade = linhas[i + 3].strip()
+
+        if not (
+            _linha_numero_inteiro(item)
+            and _linha_numero_inteiro(codigo)
+            and _linha_quantidade_ata(qtd)
+            and _linha_unidade_ata(unidade)
+        ):
+            i += 1
+            continue
+
+        j = i + 4
+        descricao_partes = []
+        valores = []
+        while j < len(linhas):
+            linha = linhas[j].strip()
+            if len(valores) >= 2 and _linha_numero_inteiro(linha):
+                break
+            if re.fullmatch(REGEX_VALOR_TABELA_ATA, linha) or re.fullmatch(REGEX_MOEDA_ATA, linha, flags=re.I):
+                valores.append(linha)
+                if len(valores) >= 2:
+                    j += 1
+                    break
+            else:
+                descricao_partes.append(linha)
+            j += 1
+
+        if descricao_partes and valores:
+            descricao = re.sub(r"\s+", " ", " ".join(descricao_partes)).strip(" -;")
+            valor_unitario = converter_numero(valores[0])
+            valor_total = converter_numero(valores[1]) if len(valores) > 1 else None
+            if len(normalizar(descricao)) >= 5 and valor_unitario is not None:
+                fontes.append(FontePreco(
+                    origem="Historico proprio",
+                    descricao=descricao,
+                    valor_unitario=valor_unitario,
+                    valor_total=valor_total,
+                    quantidade=converter_numero(qtd),
+                    unidade=unidade,
+                    data_referencia="",
+                    fornecedor_nome="",
+                    fornecedor_cnpj="",
+                    orgao="Historico do municipio",
+                    municipio="Joia",
+                    uf="RS",
+                    evidencia=(
+                        f"Ata/resultado anterior: {nome_arquivo}; "
+                        f"item: {item}; codigo: {codigo}; situacao: nao informada"
+                    ),
+                    score=0,
+                    status_validacao="revisao obrigatoria",
+                    motivos_alerta=(
+                        "Historico proprio de termo anterior extraido de tabela PDF/DOCX. "
+                        "Conferir item, descricao e valor unitario antes de usar."
+                    ),
+                ).to_dict())
+                i = j
+                continue
+
+        i += 1
+
+    return fontes
+
+
+def _fonte_ata_de_bloco(bloco, metadados, nome_arquivo):
+    texto = re.sub(r"\s+", " ", " ".join(bloco)).strip()
+    if not texto:
+        return None
+
+    match_codigo = re.match(r"^(?:item\s*)?(\d{1,6})\s*(.*)$", texto, flags=re.I)
+    codigo = match_codigo.group(1) if match_codigo else ""
+    corpo = match_codigo.group(2).strip() if match_codigo else texto
+    moedas_com_simbolo = re.findall(REGEX_MOEDA_ATA, corpo, flags=re.I)
+    moedas = moedas_com_simbolo
+    valores_sem_simbolo = False
+    if not moedas:
+        moedas = re.findall(REGEX_VALOR_TABELA_ATA, corpo, flags=re.I)
+        valores_sem_simbolo = True
+    status = _status_ata(texto)
+
+    valor_unitario = None
+    valor_total = None
+    if len(moedas) >= 2:
+        valor_unitario = converter_numero(moedas[-2])
+        valor_total = converter_numero(moedas[-1])
+    elif moedas:
+        valor_unitario = converter_numero(moedas[-1])
+
+    trecho_descricao = corpo
+    if moedas:
+        valor_corte = moedas[-2] if valores_sem_simbolo and len(moedas) >= 2 else moedas[0]
+        trecho_descricao = corpo.split(valor_corte, 1)[0].strip()
+
+    quantidade = None
+    unidade = ""
+    padrao_unidade = "|".join(re.escape(unidade_ata) for unidade_ata in sorted(UNIDADES_ATA, key=len, reverse=True))
+    matches_qtd = list(re.finditer(
+        rf"\b(\d+(?:[.,]\d+)?)\s+({padrao_unidade})\b",
+        trecho_descricao,
+        flags=re.I,
+    ))
+    if matches_qtd:
+        match_qtd = matches_qtd[-1]
+        quantidade = converter_numero(match_qtd.group(1))
+        unidade = match_qtd.group(2).upper()
+        if match_qtd.start() <= 12 and trecho_descricao[:match_qtd.start()].strip().isdigit():
+            trecho_descricao = trecho_descricao[match_qtd.end():].strip()
+        else:
+            trecho_descricao = trecho_descricao[:match_qtd.start()].strip()
+
+    descricao = re.sub(r"\s+", " ", trecho_descricao).strip(" -;")
+    if len(normalizar(descricao)) < 5:
+        return None
+
+    if valor_unitario is None and _status_historico_permite_preco(status):
+        return None
+
+    return FontePreco(
+        origem="Historico proprio",
+        descricao=descricao,
+        valor_unitario=valor_unitario,
+        valor_total=valor_total,
+        quantidade=quantidade,
+        unidade=unidade,
+        data_referencia="",
+        fornecedor_nome=metadados.get("fornecedor_nome", ""),
+        fornecedor_cnpj=metadados.get("fornecedor_cnpj", ""),
+        orgao="Historico do municipio",
+        municipio="Joia",
+        uf=metadados.get("uf", ""),
+        evidencia=(
+            f"Ata/resultado anterior: {nome_arquivo}; "
+            f"item: {codigo or '-'}; situacao: {status or 'nao informada'}"
+        ),
+        score=0,
+        status_validacao="revisao obrigatoria",
+        motivos_alerta=(
+            "Historico proprio de licitacao anterior extraido de PDF/DOCX. "
+            "Conferir documento original, item, fornecedor e situacao antes de usar na cesta."
+        ),
+    ).to_dict()
+
+
+def _fontes_ata_de_texto(nome_arquivo, texto):
+    linhas = [
+        re.sub(r"\s+", " ", str(linha)).strip()
+        for linha in texto.splitlines()
+        if str(linha).strip()
+    ]
+    fontes_tabela = _fontes_ata_tabela_sequencial(nome_arquivo, linhas)
+    if fontes_tabela:
+        return fontes_tabela
+
+    fontes = []
+    metadados = {}
+    bloco = []
+
+    def finalizar_bloco():
+        nonlocal bloco
+        if bloco:
+            fonte = _fonte_ata_de_bloco(bloco, metadados, nome_arquivo)
+            if fonte:
+                fontes.append(fonte)
+            bloco = []
+
+    for indice, linha in enumerate(linhas):
+        contexto_linha = " ".join(linhas[indice:indice + 2])
+        if "| Tipo:" in linha:
+            finalizar_bloco()
+            metadados = _metadados_fornecedor_ata(contexto_linha)
+            continue
+
+        if _linha_inicio_item_ata(linha):
+            finalizar_bloco()
+            bloco = [linha]
+            continue
+
+        if _linha_ignorada_ata(linha):
+            if "total do vencedor" in normalizar(linha):
+                finalizar_bloco()
+            continue
+
+        if bloco:
+            bloco.append(linha)
+
+    finalizar_bloco()
+    return fontes
+
+
+def carregar_fontes_ata(arquivo_enviado):
+    if arquivo_enviado is None:
+        return [], []
+
+    avisos = []
+    nome = arquivo_enviado.name.lower()
+    bytes_arquivo = arquivo_enviado.getvalue()
+
+    if nome.endswith(".pdf"):
+        texto = extrair_texto_normativo(arquivo_enviado.name, bytes_arquivo)
+        if not texto.strip():
+            avisos.append("Ata/resultado anterior: nao consegui extrair texto pesquisavel do PDF.")
+            return [], avisos
+        fontes = _fontes_ata_de_texto(arquivo_enviado.name, texto)
+        if not fontes:
+            avisos.append("Ata/resultado anterior: li o PDF, mas nao identifiquei itens com valor ou situacao aproveitavel.")
+        return fontes, avisos
+
+    if nome.endswith(".docx"):
+        try:
+            texto = "\n".join(_extrair_linhas_docx(bytes_arquivo))
+        except Exception as erro:
+            avisos.append(f"Ata/resultado anterior: nao consegui ler o DOCX ({erro}).")
+            return [], avisos
+        fontes = _fontes_ata_de_texto(arquivo_enviado.name, texto)
+        if not fontes:
+            avisos.append("Ata/resultado anterior: li o DOCX, mas nao identifiquei itens com valor ou situacao aproveitavel.")
+        return fontes, avisos
+
+    if not nome.endswith(".xlsx"):
+        avisos.append(
+            "Ata/resultado anterior: formato nao suportado. Envie XLSX, PDF ou DOCX."
+        )
+        return [], avisos
+
+    df = _ler_planilha_com_cabecalho_flexivel(bytes_arquivo)
+    coluna_descricao = localizar_coluna(df, [
+        "descricao generica",
+        "descricao",
+        "descricao do item",
+        "objeto",
+        "produto",
+        "material",
+    ])
+    coluna_valor_unitario = localizar_coluna(df, [
+        "valor unitario homologado",
+        "valor unitario",
+        "vl unitario",
+        "vl. un.",
+        "preco unitario",
+        "preco",
+        "valor cotado",
+        "valor estimado",
+    ])
+    coluna_valor_total = localizar_coluna(df, [
+        "valor total homologado",
+        "valor total",
+        "vl total",
+        "total",
+    ])
+    coluna_quantidade = localizar_coluna(df, ["quantidade", "qtd", "qtde", "quant"])
+    coluna_unidade = localizar_coluna(df, ["unidade", "un", "und", "unid"])
+    coluna_fornecedor = localizar_coluna(df, ["vencedor", "fornecedor", "empresa", "adjudicatario"])
+    coluna_cnpj = localizar_coluna(df, ["cnpj", "cpf/cnpj", "cpf cnpj", "documento"])
+    coluna_data = localizar_coluna(df, ["data homologacao", "data", "homologacao", "julgamento"])
+    coluna_orgao = localizar_coluna(df, ["orgao", "municipio", "unidade"])
+    coluna_status = localizar_coluna(df, ["situacao", "status", "resultado", "situacao item"])
+
+    if coluna_descricao is None:
+        avisos.append("Ata/resultado anterior: nao encontrei coluna de descricao.")
+        return [], avisos
+
+    fontes = []
+    for _, row in df.iterrows():
+        descricao = str(row.get(coluna_descricao, "")).strip()
+        if not descricao or descricao.lower() in {"nan", "none"}:
+            continue
+
+        status = str(row.get(coluna_status, "")).strip() if coluna_status else ""
+        valor_unitario = converter_numero(row.get(coluna_valor_unitario, "")) if coluna_valor_unitario else None
+        valor_total = converter_numero(row.get(coluna_valor_total, "")) if coluna_valor_total else None
+        quantidade = converter_numero(row.get(coluna_quantidade, "")) if coluna_quantidade else None
+        if valor_unitario is None and valor_total is not None and quantidade and quantidade > 0:
+            valor_unitario = valor_total / quantidade
+
+        if valor_unitario is None and _status_historico_permite_preco(status):
+            continue
+
+        fontes.append(FontePreco(
+            origem="Historico proprio",
+            descricao=descricao,
+            valor_unitario=valor_unitario,
+            valor_total=valor_total,
+            quantidade=quantidade,
+            unidade=str(row.get(coluna_unidade, "")).strip() if coluna_unidade else "",
+            data_referencia=str(row.get(coluna_data, "")).strip() if coluna_data else "",
+            fornecedor_nome=str(row.get(coluna_fornecedor, "")).strip() if coluna_fornecedor else "",
+            fornecedor_cnpj=str(row.get(coluna_cnpj, "")).strip() if coluna_cnpj else "",
+            orgao=str(row.get(coluna_orgao, "")).strip() if coluna_orgao else "Historico do municipio",
+            municipio="Joia" if not coluna_orgao else "",
+            evidencia=f"Ata/resultado anterior: {arquivo_enviado.name}; situacao: {status or 'nao informada'}",
+            score=0,
+            status_validacao="revisao obrigatoria",
+            motivos_alerta=(
+                "Historico proprio de licitacao anterior. Usar para analise de mercado, "
+                "fracasso/deserto e memoria de preco; conferir documento original."
+            ),
+        ).to_dict())
+
+    if not fontes:
+        avisos.append("Ata/resultado anterior: nenhum item com descricao e valor/situacao aproveitavel foi identificado.")
+
+    return fontes, avisos
+
+
+def filtrar_fontes_historico(descricao_busca, fontes_historico, limite=3):
+    if not fontes_historico:
+        return []
+
+    busca_norm = normalizar(descricao_busca)
+    termos = palavras_fortes(descricao_busca)
+    candidatos = []
+    for fonte in fontes_historico:
+        descricao = fonte.get("descricao", "")
+        descricao_norm = normalizar(descricao)
+        encontrados = [termo for termo in termos if termos_compativeis(termo, descricao_norm)]
+        score = fuzz.token_set_ratio(busca_norm, descricao_norm)
+        minimo = 2 if len(termos) >= 3 else 1
+        if len(encontrados) < minimo and score < 70:
+            continue
+        fonte_filtrada = dict(fonte)
+        fonte_filtrada["score"] = round(score, 2)
+        fonte_filtrada["evidencia"] = (
+            f"{fonte.get('evidencia', '')}; termos encontrados: "
+            f"{', '.join(encontrados) or '-'}"
+        )
+        candidatos.append(fonte_filtrada)
+
+    candidatos.sort(
+        key=lambda fonte: (
+            converter_numero(fonte.get("valor_unitario")) is None,
+            -(converter_numero(fonte.get("score")) or 0),
+        )
+    )
+    return candidatos[:limite]
 
 
 def classificar_status_lote(conformidade, resultados):
@@ -686,6 +1298,231 @@ def classificar_status_lote(conformidade, resultados):
     return "OK"
 
 
+FONTES_META_CESTA = ["LicitaCon", "Internet", "PNCP", "Fornecedores"]
+
+
+def regras_meta_padrao():
+    return [{
+        "Item inicial": 1,
+        "Item final": 9999,
+        "LicitaCon": 3,
+        "Internet": 0,
+        "PNCP": 0,
+        "Fornecedores": 0,
+    }]
+
+
+def limpar_regras_meta(df_regras):
+    if df_regras is None or df_regras.empty:
+        return regras_meta_padrao()
+
+    regras = []
+    for linha in df_regras.to_dict("records"):
+        inicio = int(converter_numero(linha.get("Item inicial")) or 0)
+        fim = int(converter_numero(linha.get("Item final")) or 0)
+        if inicio <= 0 or fim < inicio:
+            continue
+        regra = {"Item inicial": inicio, "Item final": fim}
+        for fonte in FONTES_META_CESTA:
+            regra[fonte] = max(0, int(converter_numero(linha.get(fonte)) or 0))
+        regras.append(regra)
+
+    return regras or regras_meta_padrao()
+
+
+def meta_para_item(regras_meta, item_id):
+    try:
+        item_num = int(converter_numero(item_id) or item_id)
+    except Exception:
+        item_num = 1
+
+    for regra in regras_meta or []:
+        if int(regra.get("Item inicial", 0)) <= item_num <= int(regra.get("Item final", 0)):
+            return {fonte: int(regra.get(fonte, 0) or 0) for fonte in FONTES_META_CESTA}
+    return {fonte: 0 for fonte in FONTES_META_CESTA}
+
+
+def total_meta_item(meta):
+    return sum(int(meta.get(fonte, 0) or 0) for fonte in FONTES_META_CESTA)
+
+
+def fontes_ativas_por_meta(fontes_selecionadas, regras_meta):
+    fontes = set(fontes_selecionadas or [])
+    for regra in regras_meta or []:
+        for fonte in FONTES_META_CESTA:
+            if int(regra.get(fonte, 0) or 0) > 0:
+                fontes.add(fonte)
+    return [fonte for fonte in FONTES_META_CESTA if fonte in fontes]
+
+
+def normalizar_origem_cesta(origem):
+    origem_norm = normalizar(origem or "")
+    if "internet" in origem_norm or "web" in origem_norm:
+        return "Internet"
+    if "pncp" in origem_norm:
+        return "PNCP"
+    if "fornecedor" in origem_norm or "cotacao" in origem_norm:
+        return "Fornecedores"
+    if "licitacon" in origem_norm or "historico regional" in origem_norm:
+        return "LicitaCon"
+    return origem or "Outra"
+
+
+def selecionar_aprovados_por_meta(detalhes_df, regras_meta):
+    if detalhes_df.empty:
+        return detalhes_df
+
+    detalhes = detalhes_df.copy()
+    detalhes["Origem normalizada"] = detalhes["Origem"].map(normalizar_origem_cesta)
+    detalhes["Aprovado"] = False
+    detalhes["Motivo descarte"] = ""
+
+    for item_id, grupo in detalhes.groupby("Item", sort=False):
+        meta = meta_para_item(regras_meta, item_id)
+        for fonte in FONTES_META_CESTA:
+            alvo = int(meta.get(fonte, 0) or 0)
+            if alvo <= 0:
+                continue
+            grupo_fonte = grupo[grupo["Origem normalizada"] == fonte]
+            if fonte == "Internet":
+                grupo_fonte = grupo_fonte[grupo_fonte.apply(pode_aprovar_automaticamente, axis=1)]
+            indices = grupo_fonte.head(alvo).index
+            detalhes.loc[indices, "Aprovado"] = True
+
+    return detalhes
+
+
+def pode_aprovar_automaticamente(linha):
+    origem = normalizar_origem_cesta(linha.get("Origem", ""))
+    if origem != "Internet":
+        return True
+
+    texto_risco = normalizar(
+        " ".join(
+            str(linha.get(campo, ""))
+            for campo in ("Status validacao", "Observacoes", "Evidencia fonte", "Link/Evidencia")
+        )
+    )
+    bloqueios = (
+        "marketplace",
+        "comparador",
+        "uso excepcional",
+        "nao usar",
+        "pagina de busca",
+        "pagina de categoria",
+        "listagem",
+        "pix",
+        "cupom",
+        "desconto",
+        "promocional",
+    )
+    return not any(bloqueio in texto_risco for bloqueio in bloqueios)
+
+
+def completar_aprovados_por_meta(detalhes_df, regras_meta, item_id=None):
+    if detalhes_df.empty:
+        return detalhes_df
+
+    detalhes = detalhes_df.copy()
+    if "Origem normalizada" not in detalhes.columns:
+        detalhes["Origem normalizada"] = detalhes["Origem"].map(normalizar_origem_cesta)
+    if "Aprovado" not in detalhes.columns:
+        detalhes["Aprovado"] = False
+    if "Motivo descarte" not in detalhes.columns:
+        detalhes["Motivo descarte"] = ""
+
+    grupos = detalhes.groupby("Item", sort=False)
+    for item_atual, grupo in grupos:
+        if item_id is not None and str(item_atual) != str(item_id):
+            continue
+        meta = meta_para_item(regras_meta, item_atual)
+        for fonte in FONTES_META_CESTA:
+            alvo = int(meta.get(fonte, 0) or 0)
+            if alvo <= 0:
+                continue
+            grupo_fonte = detalhes.loc[
+                grupo.index[detalhes.loc[grupo.index, "Origem normalizada"] == fonte]
+            ]
+            aprovados = grupo_fonte[grupo_fonte["Aprovado"] == True]
+            faltam = alvo - len(aprovados)
+            if faltam <= 0:
+                continue
+            candidatos = grupo_fonte[
+                (grupo_fonte["Aprovado"] != True)
+                & (grupo_fonte["Motivo descarte"].fillna("").astype(str).str.strip() == "")
+            ]
+            if fonte == "Internet":
+                candidatos = candidatos[candidatos.apply(pode_aprovar_automaticamente, axis=1)]
+            candidatos = candidatos.head(faltam)
+            detalhes.loc[candidatos.index, "Aprovado"] = True
+
+    return detalhes
+
+
+def detalhe_para_fonte(linha):
+    return {
+        "origem": linha.get("Origem", ""),
+        "descricao": linha.get("Descricao encontrada", ""),
+        "valor_unitario": converter_numero(linha.get("Valor unitario")),
+        "valor_total": converter_numero(linha.get("Valor total")),
+        "quantidade": converter_numero(linha.get("Quantidade encontrada")),
+        "unidade": linha.get("Unidade", ""),
+        "data_referencia": linha.get("Data homologacao") or linha.get("Data abertura") or "",
+        "fornecedor_nome": linha.get("Vencedor", ""),
+        "fornecedor_cnpj": linha.get("CPF/CNPJ", ""),
+        "orgao": linha.get("Orgao", ""),
+        "municipio": linha.get("Municipio fonte", ""),
+        "uf": "",
+        "link": linha.get("Link/Evidencia", ""),
+        "evidencia": linha.get("Licitacao", ""),
+        "score": converter_numero(linha.get("Score")) or 0,
+        "status_validacao": "validado" if linha.get("Aprovado") else "descartado",
+        "motivos_alerta": linha.get("Observacoes", ""),
+    }
+
+
+def recalcular_resumo_revisado(resumo_base, detalhes_revisados, perfil_codigo, responsavel, metodo_preferido, justificativas):
+    if resumo_base.empty:
+        return resumo_base
+
+    linhas = []
+    for _, item in resumo_base.iterrows():
+        item_id = item.get("Item")
+        grupo = detalhes_revisados[
+            (detalhes_revisados["Item"].astype(str) == str(item_id))
+            & (detalhes_revisados.get("Aprovado", False) == True)
+        ]
+        fontes = [detalhe_para_fonte(linha) for linha in grupo.to_dict("records")]
+        conformidade = avaliar_conformidade_pesquisa(
+            fontes,
+            descricao_objeto=item.get("Descricao original", ""),
+            responsavel=responsavel,
+            justificativa_menos_tres=justificativas.get("menos_tres", ""),
+            justificativa_descartes=justificativas.get("descartes", ""),
+            metodo_preferido=metodo_preferido,
+            perfil_codigo=perfil_codigo,
+        )
+        linha = item.to_dict()
+        linha.update({
+            "Status": classificar_status_lote(conformidade, fontes),
+            "Origens encontradas": ", ".join(conformidade.get("fontes_consultadas", [])),
+            "Resultados encontrados": len(fontes),
+            "Precos validos": conformidade["total_precos"],
+            "Precos dentro do prazo normativo": conformidade.get("precos_no_prazo"),
+            "Precos aproveitados": conformidade["precos_aproveitados"],
+            "Precos descartados": conformidade["precos_descartados"],
+            "Menor preco": conformidade["menor"],
+            "Media": conformidade["media"],
+            "Mediana": conformidade["mediana"],
+            "Metodo sugerido": conformidade["metodo_sugerido"],
+            "Valor sugerido": conformidade["valor_sugerido"],
+            "Alertas": " | ".join(conformidade["alertas"]),
+        })
+        linhas.append(linha)
+
+    return pd.DataFrame(linhas)
+
+
 def montar_linhas_cesta(
     itens_df,
     qtd_faixa_padrao=0.30,
@@ -696,9 +1533,14 @@ def montar_linhas_cesta(
     metodo_preferido="auto",
     justificativas=None,
     consultar_fontes_adicionais_todos=False,
+    modo_pncp_lote="Rapido",
+    fontes_historico_proprio=None,
+    regras_meta=None,
 ):
-    fontes_selecionadas = fontes_selecionadas or ["LicitaCon"]
+    regras_meta = limpar_regras_meta(pd.DataFrame(regras_meta or regras_meta_padrao()))
+    fontes_selecionadas = fontes_ativas_por_meta(fontes_selecionadas or ["LicitaCon"], regras_meta)
     justificativas = justificativas or {}
+    alvo_precos_item = max(1, int(limite_precos_item))
     resumo = []
     detalhes = []
     avisos_integracao_lote = []
@@ -708,8 +1550,14 @@ def montar_linhas_cesta(
     status_texto = st.empty()
 
     for posicao, item in enumerate(itens_df.to_dict("records"), start=1):
-        descricao = item["descricao"]
+        descricao_original = item["descricao"]
+        descricao_busca = item.get("descricao_generica") or descricao_original
+        exigencia_tecnica = item.get("exigencia_tecnica", "")
         quantidade = item.get("quantidade")
+        item_id = item.get("item", posicao)
+        meta_item = meta_para_item(regras_meta, item_id)
+        alvo_item = max(1, total_meta_item(meta_item) or alvo_precos_item)
+        limite_candidatos_item = max(alvo_precos_item, alvo_item * 3 + 3)
 
         if quantidade is None or quantidade <= 0:
             qtd_min = 0
@@ -718,9 +1566,9 @@ def montar_linhas_cesta(
             qtd_min = max(0, quantidade * (1 - qtd_faixa_padrao))
             qtd_max = quantidade * (1 + qtd_faixa_padrao)
 
-        status_texto.write(f"Pesquisando item {posicao}/{total}: {descricao[:90]}")
+        status_texto.write(f"Pesquisando item {posicao}/{total}: {descricao_busca[:90]}")
 
-        criterios = extrair_criterios_com_ia(descricao)
+        criterios = extrair_criterios_com_ia(descricao_busca)
         resultados = []
         fontes_normalizadas = []
         erro = ""
@@ -728,18 +1576,27 @@ def montar_linhas_cesta(
         if "LicitaCon" in fontes_selecionadas:
             try:
                 criterios, resultados, estatisticas = executar_pesquisa_sqlite(
-                    descricao_busca=descricao,
+                    descricao_busca=descricao_busca,
                     qtd_min=qtd_min,
                     qtd_max=qtd_max,
                     limite_candidatos=MAX_CANDIDATOS_LOTE,
                 )
-                fontes_normalizadas.extend(fontes_de_resultados_licitacon(resultados))
+                fontes_normalizadas.extend(fontes_de_resultados_licitacon(resultados[:limite_candidatos_item]))
             except Exception as exc:
                 erro = str(exc)
 
+        historico_item = filtrar_fontes_historico(
+            descricao_busca,
+            fontes_historico_proprio or [],
+            limite=limite_candidatos_item,
+        )
+        if historico_item:
+            fontes_normalizadas.extend(historico_item)
+            resultados = resultados + resultados_de_fontes(historico_item)
+
         conformidade = avaliar_conformidade_pesquisa(
             fontes_normalizadas or resultados,
-            descricao_objeto=descricao,
+            descricao_objeto=descricao_original,
             responsavel=responsavel,
             justificativa_menos_tres=justificativas.get("menos_tres", ""),
             justificativa_descartes=justificativas.get("descartes", ""),
@@ -752,20 +1609,26 @@ def montar_linhas_cesta(
             bool(fontes_externas)
             and (
                 consultar_fontes_adicionais_todos
+                or "Internet" in fontes_externas
                 or "LicitaCon" not in fontes_selecionadas
-                or conformidade.get("precos_aproveitados", 0) < 3
+                or conformidade.get("precos_aproveitados", 0) < alvo_item
+                or any(int(meta_item.get(fonte, 0) or 0) > 0 for fonte in fontes_externas)
             )
         )
 
         if deve_buscar_fontes_externas:
             status_texto.write(
-                f"Complementando item {posicao}/{total} em fontes externas: {descricao[:80]}"
+                f"Complementando item {posicao}/{total} em fontes externas: {descricao_busca[:80]}"
             )
             adicionais, avisos_integracao = executar_fontes_adicionais(
-                descricao,
+                descricao_busca,
                 fontes_selecionadas,
-                limite_pncp=limite_precos_item,
-                limite_web=limite_precos_item,
+                limite_pncp=max(1, int(meta_item.get("PNCP", 0) or alvo_item)) * 3,
+                limite_web=max(1, int(meta_item.get("Internet", 0) or alvo_item)) * 3,
+                modo_pncp=modo_pncp_lote,
+                precos_existentes=conformidade.get("precos_aproveitados", 0),
+                minimo_precos=alvo_item,
+                forcar_pncp=int(meta_item.get("PNCP", 0) or 0) > 0,
             )
             avisos_integracao_lote.extend(
                 f"Item {item.get('item', posicao)} - {aviso}"
@@ -775,7 +1638,7 @@ def montar_linhas_cesta(
             resultados = resultados + resultados_de_fontes(adicionais)
             conformidade = avaliar_conformidade_pesquisa(
                 fontes_normalizadas or resultados,
-                descricao_objeto=descricao,
+                descricao_objeto=descricao_original,
                 responsavel=responsavel,
                 justificativa_menos_tres=justificativas.get("menos_tres", ""),
                 justificativa_descartes=justificativas.get("descartes", ""),
@@ -786,10 +1649,20 @@ def montar_linhas_cesta(
 
         resumo.append({
             "Item": item.get("item", posicao),
-            "Descricao original": descricao,
+            "Descricao original": descricao_original,
+            "Descricao generica pesquisada": descricao_busca,
+            "Exigencia tecnica": exigencia_tecnica,
             "Quantidade solicitada": quantidade if quantidade is not None else "",
+            "Unidade solicitada": item.get("unidade", ""),
             "Status": status,
-            "Fontes consultadas": ", ".join(fontes_selecionadas),
+            "Meta LicitaCon": meta_item.get("LicitaCon", 0),
+            "Meta Internet": meta_item.get("Internet", 0),
+            "Meta PNCP": meta_item.get("PNCP", 0),
+            "Meta Fornecedores": meta_item.get("Fornecedores", 0),
+            "Fontes consultadas": ", ".join(
+                list(fontes_selecionadas)
+                + (["Historico proprio"] if fontes_historico_proprio else [])
+            ),
             "Origens encontradas": ", ".join(conformidade.get("fontes_consultadas", [])),
             "Resultados encontrados": len(resultados),
             "Precos validos": conformidade["total_precos"],
@@ -806,12 +1679,14 @@ def montar_linhas_cesta(
             "Erro": erro,
         })
 
-        for ordem, resultado in enumerate(resultados[:limite_precos_item], start=1):
+        for ordem, resultado in enumerate(resultados[:limite_candidatos_item], start=1):
             detalhes.append({
-                "Item": item.get("item", posicao),
+                "Item": item_id,
                 "Ordem": ordem,
                 "Status item": status,
-                "Descricao original": descricao,
+                "Descricao original": descricao_original,
+                "Descricao generica pesquisada": descricao_busca,
+                "Exigencia tecnica": exigencia_tecnica,
                 "Descricao encontrada": resultado.get("descricao", ""),
                 "Origem": resultado.get("fonte_base") or resultado.get("modo_busca", ""),
                 "Score": resultado.get("score", ""),
@@ -830,6 +1705,8 @@ def montar_linhas_cesta(
                 "Vencedor": resultado.get("vencedor", ""),
                 "CPF/CNPJ": resultado.get("cpf_cnpj", ""),
                 "Link/Evidencia": resultado.get("link_licitacon", ""),
+                "Evidencia fonte": resultado.get("evidencia", ""),
+                "Status validacao": resultado.get("status_validacao", ""),
                 "Observacoes": resultado.get("avisos_tecnicos", ""),
             })
 
@@ -1076,6 +1953,14 @@ def gerar_pdf_cesta(resumo_df, detalhes_df, responsavel, metodo, perfil_nome, fo
         linhas.append({"texto": titulo, "tamanho": 11, "negrito": True})
         for trecho in _pdf_wrap(item.get("Descricao original", ""), largura=98):
             linhas.append({"texto": trecho, "tamanho": 9})
+        descricao_generica = item.get("Descricao generica pesquisada", "")
+        if descricao_generica and descricao_generica != item.get("Descricao original", ""):
+            for trecho in _pdf_wrap(f"Descricao generica pesquisada: {descricao_generica}", largura=98):
+                linhas.append({"texto": trecho, "tamanho": 8})
+        exigencia_tecnica = item.get("Exigencia tecnica", "")
+        if exigencia_tecnica:
+            for trecho in _pdf_wrap(f"Exigencia tecnica/referencia: {exigencia_tecnica}", largura=98):
+                linhas.append({"texto": trecho, "tamanho": 8})
         linhas.append({
             "texto": (
                 f"Qtd solicitada: {item.get('Quantidade solicitada', '-')}; "
@@ -1098,9 +1983,17 @@ def gerar_pdf_cesta(resumo_df, detalhes_df, responsavel, metodo, perfil_nome, fo
         for item_id, grupo in detalhes_df.groupby("Item", sort=False):
             linhas.append({"espaco": 8})
             descricao_original = grupo.iloc[0].get("Descricao original", "")
+            descricao_generica = grupo.iloc[0].get("Descricao generica pesquisada", "")
+            exigencia_tecnica = grupo.iloc[0].get("Exigencia tecnica", "")
             linhas.append({"texto": f"Item {item_id}", "tamanho": 12, "negrito": True})
             for trecho in _pdf_wrap(descricao_original, largura=98):
                 linhas.append({"texto": trecho, "tamanho": 9})
+            if descricao_generica and descricao_generica != descricao_original:
+                for trecho in _pdf_wrap(f"Descricao generica pesquisada: {descricao_generica}", largura=98):
+                    linhas.append({"texto": trecho, "tamanho": 8})
+            if exigencia_tecnica:
+                for trecho in _pdf_wrap(f"Exigencia tecnica/referencia: {exigencia_tecnica}", largura=98):
+                    linhas.append({"texto": trecho, "tamanho": 8})
 
             for _, fonte in grupo.iterrows():
                 cabecalho = (
@@ -1431,15 +2324,29 @@ def resultados_de_fontes(fontes):
     return [fonte_para_resultado(fonte) for fonte in fontes]
 
 
-def executar_fontes_adicionais(descricao_busca, fontes_selecionadas, limite_pncp=20, limite_web=10):
+def _contar_fontes_com_preco(fontes):
+    return sum(1 for fonte in fontes if converter_numero(fonte.get("valor_unitario")) is not None)
+
+
+def executar_fontes_adicionais(
+    descricao_busca,
+    fontes_selecionadas,
+    limite_pncp=20,
+    limite_web=10,
+    modo_pncp="Rapido",
+    precos_existentes=0,
+    minimo_precos=3,
+    forcar_pncp=False,
+):
     fontes = []
     avisos = []
+    modo_pncp_norm = normalizar(modo_pncp)
 
-    if "PNCP" in fontes_selecionadas:
+    if "Fornecedores" in fontes_selecionadas:
         try:
-            fontes.extend([fonte.to_dict() for fonte in buscar_pncp(descricao_busca, limite=limite_pncp)])
+            fontes.extend([fonte.to_dict() for fonte in buscar_fornecedores(descricao_busca)])
         except Exception as erro:
-            avisos.append(f"PNCP: {erro}")
+            avisos.append(f"Fornecedores: {erro}")
 
     if "Internet" in fontes_selecionadas:
         try:
@@ -1450,11 +2357,74 @@ def executar_fontes_adicionais(descricao_busca, fontes_selecionadas, limite_pncp
         except Exception as erro:
             avisos.append(f"Internet: {erro}")
 
-    if "Fornecedores" in fontes_selecionadas:
+    ja_tem_minimo = precos_existentes + _contar_fontes_com_preco(fontes) >= minimo_precos
+
+    if "PNCP" in fontes_selecionadas and (forcar_pncp or not ja_tem_minimo):
+        total_antes_pncp = len(fontes)
         try:
-            fontes.extend([fonte.to_dict() for fonte in buscar_fornecedores(descricao_busca)])
+            if modo_pncp_norm.startswith("amplo"):
+                fontes.extend([
+                    fonte.to_dict()
+                    for fonte in buscar_pncp(
+                        descricao_busca,
+                        limite=limite_pncp,
+                        dias=60,
+                        modalidades=[6, 8, 7, 5, 9],
+                        paginas_por_modalidade=2,
+                        max_contratacoes_detalhadas=80,
+                        timeout_consulta=8,
+                        timeout_detalhe=12,
+                        tentativas_consulta=2,
+                        ampliar_candidatos=True,
+                    )
+                ])
+            elif modo_pncp_norm.startswith("equilibrado"):
+                fontes.extend([
+                    fonte.to_dict()
+                    for fonte in buscar_pncp(
+                        descricao_busca,
+                        limite=min(limite_pncp, 5),
+                        dias=45,
+                        modalidades=[6, 8, 7],
+                        paginas_por_modalidade=1,
+                        max_contratacoes_detalhadas=30,
+                        timeout_consulta=4,
+                        timeout_detalhe=6,
+                        tentativas_consulta=1,
+                        ampliar_candidatos=True,
+                    )
+                ])
+            else:
+                fontes.extend([
+                    fonte.to_dict()
+                    for fonte in buscar_pncp(
+                        descricao_busca,
+                        limite=min(limite_pncp, 3),
+                        dias=7,
+                        modalidades=[6, 8],
+                        paginas_por_modalidade=1,
+                        max_contratacoes_detalhadas=6,
+                        timeout_consulta=2,
+                        timeout_detalhe=4,
+                        tentativas_consulta=1,
+                        ampliar_candidatos=False,
+                    )
+                ])
+            if len(fontes) == total_antes_pncp:
+                avisos.append(
+                    "PNCP: nenhum item compativel encontrado. "
+                    "A busca oficial do PNCP nao pesquisa por palavra-chave; "
+                    "o sistema varre contratacoes recentes e so aceita itens com termos do produto."
+                )
         except Exception as erro:
-            avisos.append(f"Fornecedores: {erro}")
+            if modo_pncp_norm.startswith("rapido"):
+                avisos.append("PNCP: sem resposta rapida ou sem item compativel; tente o modo Amplo se precisar insistir nesta fonte.")
+            elif modo_pncp_norm.startswith("equilibrado"):
+                avisos.append("PNCP: sem item compativel no modo Equilibrado; tente o modo Amplo se precisar insistir nesta fonte.")
+            else:
+                avisos.append(f"PNCP: {erro}")
+    elif "PNCP" in fontes_selecionadas and ja_tem_minimo:
+        avisos.append("PNCP: pulado no modo rapido porque as fontes anteriores ja atingiram o minimo de precos.")
 
     return fontes, avisos
 
@@ -1758,6 +2728,291 @@ def exibir_resultado_card(indice, resultado, descricao_link):
             st.write(f"**Linha no CSV:** {resultado.get('linha_csv', '')}")
 
 
+def render_painel_admin(usuario_atual):
+    if not usuario_atual:
+        return
+    if usuario_atual.get("perfil") != "admin":
+        return
+
+    with st.expander("Painel de administracao de usuarios"):
+        st.caption("Area restrita a administradores para liberar e manter os acessos do sistema.")
+
+        usuarios = listar_usuarios()
+        if usuarios:
+            usuarios_df = pd.DataFrame(usuarios)
+            usuarios_df["ativo"] = usuarios_df["ativo"].map(lambda valor: "Sim" if int(valor or 0) else "Nao")
+            st.dataframe(usuarios_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("Nenhum usuario cadastrado.")
+
+        aba_criar, aba_editar = st.tabs(["Novo usuario", "Editar acesso"])
+
+        with aba_criar:
+            with st.form("form_admin_criar_usuario", clear_on_submit=True):
+                col_u1, col_u2 = st.columns(2)
+                with col_u1:
+                    nome = st.text_input("Nome", key="admin_novo_nome")
+                    email = st.text_input("Email", key="admin_novo_email")
+                with col_u2:
+                    perfil = st.selectbox("Perfil", ["usuario", "admin"], key="admin_novo_perfil")
+                    ativo = st.checkbox("Usuario ativo", value=True, key="admin_novo_ativo")
+                senha = st.text_input("Senha inicial", type="password", key="admin_nova_senha")
+                enviar = st.form_submit_button("Criar usuario", type="primary")
+
+            if enviar:
+                if not nome.strip() or not email.strip() or "@" not in email:
+                    st.error("Informe nome e email valido.")
+                elif len(senha) < 8:
+                    st.error("Use uma senha com pelo menos 8 caracteres.")
+                else:
+                    try:
+                        criar_usuario(
+                            nome=nome,
+                            email=email,
+                            senha_hash=gerar_hash_senha(senha),
+                            perfil=perfil,
+                            ativo=ativo,
+                        )
+                        st.success("Usuario criado.")
+                        st.rerun()
+                    except Exception as erro:
+                        st.error(f"Nao foi possivel criar o usuario: {erro}")
+
+        with aba_editar:
+            if not usuarios:
+                st.info("Crie o primeiro usuario para habilitar a edicao.")
+                return
+
+            opcoes = {
+                f"{usuario['nome']} <{usuario['email']}>": usuario
+                for usuario in usuarios
+            }
+            selecionado_label = st.selectbox("Usuario", list(opcoes), key="admin_usuario_editar")
+            selecionado = opcoes[selecionado_label]
+
+            with st.form("form_admin_editar_usuario"):
+                col_e1, col_e2 = st.columns(2)
+                with col_e1:
+                    nome_edit = st.text_input("Nome", value=selecionado["nome"], key="admin_edit_nome")
+                    email_edit = st.text_input("Email", value=selecionado["email"], key="admin_edit_email")
+                with col_e2:
+                    perfil_edit = st.selectbox(
+                        "Perfil",
+                        ["usuario", "admin"],
+                        index=1 if selecionado.get("perfil") == "admin" else 0,
+                        key="admin_edit_perfil",
+                    )
+                    ativo_edit = st.checkbox(
+                        "Usuario ativo",
+                        value=bool(selecionado.get("ativo")),
+                        key="admin_edit_ativo",
+                    )
+                nova_senha = st.text_input(
+                    "Nova senha (opcional)",
+                    type="password",
+                    key="admin_edit_senha",
+                )
+                salvar = st.form_submit_button("Salvar alteracoes", type="primary")
+
+            if salvar:
+                if selecionado["id"] == usuario_atual.get("id") and not ativo_edit:
+                    st.error("Voce nao pode desativar o proprio usuario logado.")
+                elif selecionado["id"] == usuario_atual.get("id") and perfil_edit != "admin":
+                    st.error("Voce nao pode remover o proprio perfil de administrador.")
+                elif not nome_edit.strip() or not email_edit.strip() or "@" not in email_edit:
+                    st.error("Informe nome e email valido.")
+                elif nova_senha and len(nova_senha) < 8:
+                    st.error("A nova senha precisa ter pelo menos 8 caracteres.")
+                else:
+                    try:
+                        atualizar_usuario(
+                            selecionado["id"],
+                            nome_edit,
+                            email_edit,
+                            perfil_edit,
+                            ativo_edit,
+                        )
+                        if nova_senha:
+                            atualizar_senha_usuario(selecionado["id"], gerar_hash_senha(nova_senha))
+                        st.success("Usuario atualizado.")
+                        st.rerun()
+                    except Exception as erro:
+                        st.error(f"Nao foi possivel atualizar o usuario: {erro}")
+
+
+def aplicar_acao_candidato_lote(detalhes_lote, indice_original, aprovar, item_revisao):
+    atualizado = detalhes_lote.copy()
+    if aprovar:
+        atualizado.loc[indice_original, "Aprovado"] = True
+        atualizado.loc[indice_original, "Motivo descarte"] = ""
+    else:
+        atualizado.loc[indice_original, "Aprovado"] = False
+        atualizado.loc[indice_original, "Motivo descarte"] = "Removido manualmente na revisao"
+        atualizado = completar_aprovados_por_meta(
+            atualizado,
+            st.session_state.get("lote_regras_meta", []),
+            item_id=item_revisao,
+        )
+    return atualizado
+
+
+def _texto_curto_tela(valor, limite=110):
+    texto = re.sub(r"\s+", " ", "" if valor is None else str(valor)).strip()
+    if len(texto) <= limite:
+        return texto
+    return texto[: max(0, limite - 3)].rstrip() + "..."
+
+
+def valor_por_metodologia(valores, metodo):
+    valores = [valor for valor in valores if valor is not None and valor > 0]
+    if not valores:
+        return None, "Sem valor"
+    metodo_norm = normalizar(metodo or "auto")
+    if metodo_norm == "media":
+        return _media_valores(valores), "Media"
+    if metodo_norm == "menor":
+        return min(valores), "Menor preco"
+    if metodo_norm == "mediana":
+        return _mediana_valores(valores), "Mediana"
+    return _mediana_valores(valores), "Auto/mediana"
+
+
+def item_historico_da_evidencia(evidencia):
+    match = re.search(r"\bitem:\s*([A-Za-z0-9_.\-\/]+)", str(evidencia or ""), flags=re.I)
+    return match.group(1).strip() if match else ""
+
+
+def preco_anterior_por_item(item_id, fontes_historico):
+    item_alvo = str(item_id).strip()
+    for fonte in fontes_historico or []:
+        if item_historico_da_evidencia(fonte.get("evidencia", "")) != item_alvo:
+            continue
+        valor = converter_numero(fonte.get("valor_unitario"))
+        if valor is not None:
+            return valor, fonte.get("descricao", "")
+    return None, ""
+
+
+def itens_manuais_padrao():
+    return pd.DataFrame([
+        {
+            "Item": 1,
+            "Descricao do item": "",
+            "Quantidade solicitada": "",
+            "Unidade": "Un",
+            "Valor unitario anterior": "",
+        }
+    ])
+
+
+def numerar_itens_manuais(df_itens):
+    colunas = [
+        "Item",
+        "Descricao do item",
+        "Quantidade solicitada",
+        "Unidade",
+        "Valor unitario anterior",
+    ]
+    if df_itens is None or df_itens.empty:
+        return itens_manuais_padrao()
+
+    df = df_itens.copy()
+    for coluna in colunas:
+        if coluna not in df.columns:
+            df[coluna] = None
+
+    numero = 1
+    for indice, row in df.iterrows():
+        descricao = str(row.get("Descricao do item", "") or "").strip()
+        if descricao and descricao.lower() not in {"nan", "none"}:
+            df.at[indice, "Item"] = numero
+            numero += 1
+        else:
+            df.at[indice, "Item"] = None
+
+    return df[colunas]
+
+
+def limpar_numero_colado(valor):
+    if valor is None:
+        return ""
+    texto = str(valor).strip()
+    if texto.lower() in {"", "nan", "none"}:
+        return ""
+    numero = converter_numero(texto)
+    if numero is None:
+        return texto
+    if "," not in texto and "." not in texto and abs(numero) >= 100:
+        possivel_decimal = numero / 100
+        if possivel_decimal.is_integer():
+            return str(int(possivel_decimal))
+        return f"{possivel_decimal:.2f}".replace(".", ",")
+    return texto
+
+
+def normalizar_numeros_itens_manuais(df_itens):
+    df = df_itens.copy()
+    for coluna in ["Quantidade solicitada", "Valor unitario anterior"]:
+        if coluna in df.columns:
+            df[coluna] = df[coluna].map(limpar_numero_colado)
+    return df
+
+
+def carregar_itens_manuais(df_itens):
+    if df_itens is None or df_itens.empty:
+        return pd.DataFrame()
+
+    itens = []
+    for indice, row in df_itens.iterrows():
+        descricao = str(row.get("Descricao do item", "")).strip()
+        if not descricao or descricao.lower() in {"nan", "none"}:
+            continue
+
+        item = str(len(itens) + 1)
+
+        itens.append(montar_item_pesquisa(
+            item=item,
+            descricao=descricao,
+            quantidade=converter_numero(row.get("Quantidade solicitada")),
+            unidade=str(row.get("Unidade", "") or "").strip(),
+        ) | {
+            "valor_unitario_referencia": converter_numero(row.get("Valor unitario anterior")),
+        })
+
+    return pd.DataFrame(itens)
+
+
+def fontes_referencia_manual(itens_df):
+    fontes = []
+    if itens_df is None or itens_df.empty:
+        return fontes
+
+    for item in itens_df.to_dict("records"):
+        valor = converter_numero(item.get("valor_unitario_referencia"))
+        if valor is None:
+            continue
+        quantidade = converter_numero(item.get("quantidade"))
+        fontes.append(FontePreco(
+            origem="Historico proprio",
+            descricao=item.get("descricao", ""),
+            valor_unitario=valor,
+            valor_total=(valor * quantidade) if quantidade else None,
+            quantidade=quantidade,
+            unidade=item.get("unidade", ""),
+            orgao="Referencia informada pelo usuario",
+            municipio="",
+            evidencia=(
+                "Referencia anterior informada manualmente; "
+                f"item: {item.get('item', '')}; situacao: informada pelo usuario"
+            ),
+            score=100,
+            status_validacao="informado manualmente",
+            motivos_alerta="Valor unitario anterior informado no cadastro manual do item.",
+        ).to_dict())
+
+    return fontes
+
+
 # ============================================================
 # LAYOUT
 # ============================================================
@@ -1768,6 +3023,8 @@ st.caption(
     "Interface web para executar a pesquisa automatizada a partir da base local ou CSV do LicitaCon, "
     "mantendo busca rigida, relaxada, ampla, score, validacao tecnica e geracao de HTML."
 )
+
+render_painel_admin(usuario_logado)
 
 with st.expander("Cadastro de fornecedores especializados"):
     fornecedores_atuais = listar_fornecedores()
@@ -1976,10 +3233,9 @@ with st.sidebar:
         "Quando abrir o sistema, clique manualmente em Limpar dentro do portal."
     )
 
-st.subheader("Pesquisa por planilha")
+st.subheader("Pesquisa por itens")
 st.caption(
-    "Envie o termo de referencia para montar uma cesta de precos item por item. "
-    "Excel e o formato mais confiavel; Word e PDF podem exigir revisao dos itens extraidos."
+    "Informe os itens em uma tabela controlada para montar a cesta de precos com menos risco de erro na leitura."
 )
 
 st.markdown("#### Dados da pesquisa e metodologia")
@@ -2029,11 +3285,78 @@ st.divider()
 col_planilha, col_parametros_lote = st.columns([2, 1])
 
 with col_planilha:
-    arquivo_planilha = st.file_uploader(
-        "Arquivo do termo de referencia",
-        type=["xlsx", "docx", "pdf"],
-        key="arquivo_planilha_lote"
+    modo_entrada_lote = st.radio(
+        "Como informar os itens",
+        ["Digitar itens no sistema", "Importar arquivo"],
+        index=0,
+        horizontal=True,
+        help="O preenchimento manual evita erro por colunas fora do padrao em PDFs ou planilhas."
     )
+
+    arquivo_planilha = None
+    arquivo_ata_lote = None
+    itens_manuais_editor = pd.DataFrame()
+
+    if modo_entrada_lote == "Digitar itens no sistema":
+        st.caption("Preencha uma linha por item. O valor anterior e opcional e sera usado apenas como referencia da licitacao anterior.")
+        dados_itens_editor = normalizar_numeros_itens_manuais(numerar_itens_manuais(
+            st.session_state.get("itens_manuais_lote", itens_manuais_padrao())
+        ))
+        itens_manuais_editor = st.data_editor(
+            dados_itens_editor,
+            num_rows="dynamic",
+            use_container_width=True,
+            hide_index=True,
+            key="editor_itens_manuais_lote",
+            column_config={
+                "Item": st.column_config.NumberColumn(
+                    "Item",
+                    min_value=1,
+                    step=1,
+                    required=True,
+                    disabled=True,
+                    alignment="center",
+                    width="small",
+                ),
+                "Descricao do item": st.column_config.TextColumn("Descricao do item", required=True, width="large"),
+                "Quantidade solicitada": st.column_config.TextColumn(
+                    "Quantidade solicitada",
+                    alignment="center",
+                    width="small",
+                    help="Aceita virgula decimal, por exemplo 6,00.",
+                ),
+                "Unidade": st.column_config.TextColumn(
+                    "Unidade",
+                    width="small",
+                    alignment="center",
+                ),
+                "Valor unitario anterior": st.column_config.TextColumn(
+                    "Valor unitario anterior",
+                    alignment="center",
+                    width="medium",
+                    help="Aceita virgula decimal, por exemplo 486,1600.",
+                ),
+            },
+        )
+        itens_manuais_editor = normalizar_numeros_itens_manuais(numerar_itens_manuais(itens_manuais_editor))
+        if not itens_manuais_editor.equals(dados_itens_editor):
+            st.session_state["itens_manuais_lote"] = itens_manuais_editor
+            st.rerun()
+    else:
+        arquivo_planilha = st.file_uploader(
+            "Arquivo do termo de referencia",
+            type=["xlsx", "docx", "pdf"],
+            key="arquivo_planilha_lote"
+        )
+        arquivo_ata_lote = st.file_uploader(
+            "Ata/resultado anterior homologado ou deserto (opcional)",
+            type=["xlsx", "docx", "pdf"],
+            key="arquivo_ata_lote",
+            help=(
+                "Use XLSX com colunas de descricao, valor unitario, quantidade, vencedor e situacao, "
+                "ou PDF/DOCX pesquisavel. O resultado extraido fica como historico proprio para revisao."
+            )
+        )
 
 with col_parametros_lote:
     max_itens_lote = st.number_input(
@@ -2052,6 +3375,14 @@ with col_parametros_lote:
         step=5,
         help="Exemplo: se a planilha pede 100 unidades e a tolerancia e 30%, o sistema pesquisa compras entre 70 e 130 unidades."
     )
+    limite_precos_lote = st.number_input(
+        "Meta padrao de precos por item",
+        min_value=1,
+        max_value=20,
+        value=3,
+        step=1,
+        help="Usada como fallback quando a tabela de metas nao cobrir algum item."
+    )
     modo_fontes_lote = st.selectbox(
         "Consulta de fontes no lote",
         [
@@ -2061,19 +3392,58 @@ with col_parametros_lote:
         index=0,
         help="O modo rapido evita travar planilhas grandes consultando PNCP em itens que ja tem pelo menos 3 precos no LicitaCon."
     )
+    modo_pncp_lote = st.selectbox(
+        "Profundidade PNCP no lote",
+        ["Rapido", "Equilibrado", "Amplo"],
+        index=0,
+        help="Equilibrado amplia candidatos como materiais eletricos/ferramentas sem aceitar item sem termos do produto. Amplo consulta mais dias e modalidades."
+    )
+
+st.markdown("#### Metas de resultados antes da varredura")
+st.caption("Defina quantos precos de cada origem devem ser aprovados inicialmente por faixa de itens. A revisao manual pode trocar ou descartar depois.")
+
+metas_iniciais = st.session_state.get("regras_meta_lote")
+if not metas_iniciais:
+    metas_iniciais = [{
+        "Item inicial": 1,
+        "Item final": 90,
+        "LicitaCon": int(limite_precos_lote),
+        "Internet": 0,
+        "PNCP": 0,
+        "Fornecedores": 0,
+    }]
+
+metas_df = st.data_editor(
+    pd.DataFrame(metas_iniciais),
+    num_rows="dynamic",
+    use_container_width=True,
+    hide_index=True,
+    column_config={
+        "Item inicial": st.column_config.NumberColumn(min_value=1, step=1),
+        "Item final": st.column_config.NumberColumn(min_value=1, step=1),
+        "LicitaCon": st.column_config.NumberColumn(min_value=0, max_value=20, step=1),
+        "Internet": st.column_config.NumberColumn(min_value=0, max_value=20, step=1),
+        "PNCP": st.column_config.NumberColumn(min_value=0, max_value=20, step=1),
+        "Fornecedores": st.column_config.NumberColumn(min_value=0, max_value=20, step=1),
+    },
+    key="editor_metas_lote",
+)
+regras_meta_lote = limpar_regras_meta(metas_df)
 
 executar_lote = st.button(
-    "Gerar cesta de precos da planilha",
+    "Executar varredura dos itens",
     type="primary",
     use_container_width=True
 )
 
 if executar_lote:
-    if "LicitaCon" in fontes_selecionadas and not sqlite_ok:
+    fontes_lote_consulta = fontes_ativas_por_meta(fontes_selecionadas, regras_meta_lote)
+
+    if "LicitaCon" in fontes_lote_consulta and not sqlite_ok:
         st.error(sqlite_msg)
         st.stop()
 
-    if arquivo_planilha is None:
+    if modo_entrada_lote == "Importar arquivo" and arquivo_planilha is None:
         st.error("Selecione um arquivo XLSX, DOCX ou PDF.")
         st.stop()
 
@@ -2081,25 +3451,44 @@ if executar_lote:
         st.error("Informe o responsavel pela pesquisa.")
         st.stop()
 
-    if not fontes_selecionadas:
+    if not fontes_lote_consulta:
         st.error("Selecione ao menos uma fonte de pesquisa.")
         st.stop()
 
-    try:
-        itens_lote = carregar_itens_documento(arquivo_planilha)
-    except Exception as erro:
-        st.error(f"Nao foi possivel ler o arquivo do termo de referencia: {erro}")
-        st.stop()
+    fontes_ata_lote = []
+    avisos_ata_lote = []
+    if modo_entrada_lote == "Importar arquivo" and arquivo_ata_lote is not None:
+        fontes_ata_lote, avisos_ata_lote = carregar_fontes_ata(arquivo_ata_lote)
+
+    if modo_entrada_lote == "Digitar itens no sistema":
+        itens_lote = carregar_itens_manuais(itens_manuais_editor)
+        st.session_state["itens_manuais_lote"] = itens_manuais_editor
+        fontes_ata_lote.extend(fontes_referencia_manual(itens_lote))
+    else:
+        try:
+            itens_lote = carregar_itens_documento(arquivo_planilha)
+        except Exception as erro:
+            st.error(f"Nao foi possivel ler o arquivo do termo de referencia: {erro}")
+            st.stop()
 
     if itens_lote.empty:
-        st.error("Nao encontrei itens validos no arquivo enviado.")
+        st.error("Informe ao menos um item valido para pesquisar.")
         st.stop()
 
     itens_lote = itens_lote.head(int(max_itens_lote)).copy()
-    st.info(f"Processando {len(itens_lote)} item(ns) da planilha.")
+    st.info(f"Processando {len(itens_lote)} item(ns).")
 
-    with st.expander("Itens extraidos do termo de referencia", expanded=not arquivo_planilha.name.lower().endswith(".xlsx")):
+    expandir_itens = modo_entrada_lote == "Digitar itens no sistema" or not arquivo_planilha.name.lower().endswith(".xlsx")
+    with st.expander("Itens que serao pesquisados", expanded=expandir_itens):
         st.dataframe(itens_lote, use_container_width=True, hide_index=True)
+
+    if fontes_ata_lote:
+        st.info(f"Referencia/preco anterior carregado: {len(fontes_ata_lote)} registro(s).")
+    if modo_entrada_lote == "Importar arquivo" and arquivo_ata_lote is not None:
+        if fontes_ata_lote:
+            st.info(f"Ata/resultado anterior carregado: {len(fontes_ata_lote)} registro(s) identificado(s).")
+        for aviso_ata in avisos_ata_lote:
+            st.warning(aviso_ata)
 
     justificativas = {
         "menos_tres": justificativa_menos_tres,
@@ -2110,29 +3499,39 @@ if executar_lote:
     resumo_lote, detalhes_lote, avisos_lote = montar_linhas_cesta(
         itens_lote,
         qtd_faixa_padrao=faixa_qtd_lote / 100,
-        fontes_selecionadas=fontes_selecionadas,
+        limite_precos_item=int(limite_precos_lote),
+        fontes_selecionadas=fontes_lote_consulta,
         perfil_codigo=perfil_normativo_codigo,
         responsavel=responsavel_pesquisa.strip(),
         metodo_preferido=metodo_preferido,
         justificativas=justificativas,
         consultar_fontes_adicionais_todos=modo_fontes_lote.startswith("Completa"),
+        modo_pncp_lote=modo_pncp_lote,
+        fontes_historico_proprio=fontes_ata_lote,
+        regras_meta=regras_meta_lote,
     )
-    excel_lote = gerar_excel_cesta(resumo_lote, detalhes_lote)
-    pdf_lote = gerar_pdf_cesta(
-        resumo_lote,
-        detalhes_lote,
-        responsavel=responsavel_pesquisa.strip(),
-        metodo=metodo_preferido,
-        perfil_nome=obter_perfil_normativo(perfil_normativo_codigo).nome,
-        fontes_selecionadas=fontes_selecionadas,
+
+    detalhes_lote = selecionar_aprovados_por_meta(detalhes_lote, regras_meta_lote)
+    fontes_lote_relatorio = (
+        list(fontes_lote_consulta) + (["Historico proprio"] if fontes_ata_lote else [])
     )
 
     st.session_state["lote_resumo"] = resumo_lote
-    st.session_state["lote_detalhes"] = detalhes_lote
-    st.session_state["lote_excel"] = excel_lote
-    st.session_state["lote_pdf"] = pdf_lote
-    st.session_state["lote_avisos"] = avisos_lote
-    st.session_state["lote_fontes_selecionadas"] = fontes_selecionadas
+    st.session_state["lote_candidatos"] = detalhes_lote
+    st.session_state.pop("lote_detalhes", None)
+    st.session_state.pop("lote_excel", None)
+    st.session_state.pop("lote_pdf", None)
+    st.session_state["lote_avisos"] = avisos_ata_lote + avisos_lote
+    st.session_state["lote_fontes_selecionadas"] = fontes_lote_relatorio
+    st.session_state["lote_fontes_historico"] = fontes_ata_lote
+    st.session_state["lote_regras_meta"] = regras_meta_lote
+    st.session_state["lote_responsavel"] = responsavel_pesquisa.strip()
+    st.session_state["lote_metodo"] = metodo_preferido
+    st.session_state["lote_perfil_codigo"] = perfil_normativo_codigo
+    st.session_state["lote_justificativas"] = justificativas
+    st.session_state["regras_meta_lote"] = regras_meta_lote
+
+container_revisao_lote = st.container()
 
 st.divider()
 st.subheader("Pesquisa individual")
@@ -2268,44 +3667,283 @@ if executar:
     st.session_state["perfil_normativo_codigo"] = perfil_normativo_codigo
     st.session_state["justificativas"] = justificativas
 
-if "lote_resumo" in st.session_state:
-    st.divider()
-    st.subheader("Resumo da cesta de precos")
-    resumo_lote = st.session_state["lote_resumo"]
-    detalhes_lote = st.session_state["lote_detalhes"]
+with container_revisao_lote:
+    if "lote_resumo" in st.session_state:
+        st.divider()
+        st.subheader("Revisao da cesta de precos")
+        resumo_lote = st.session_state["lote_resumo"]
+        detalhes_lote = st.session_state.get("lote_candidatos", st.session_state.get("lote_detalhes", pd.DataFrame()))
+    
+        col_ok, col_atencao, col_revisar, col_sem = st.columns(4)
+        col_ok.metric("OK", int((resumo_lote["Status"] == "OK").sum()))
+        col_atencao.metric("Atencao", int((resumo_lote["Status"] == "Atencao").sum()))
+        col_revisar.metric("Revisar", int((resumo_lote["Status"] == "Revisar").sum()))
+        col_sem.metric("Sem resultado", int((resumo_lote["Status"] == "Sem resultado").sum()))
+    
+        st.dataframe(resumo_lote, use_container_width=True, hide_index=True)
+    
+        if detalhes_lote.empty:
+            st.warning("A varredura nao retornou candidatos para revisao.")
+        else:
+            itens_opcoes = list(dict.fromkeys(detalhes_lote["Item"].tolist()))
+            item_revisao = st.selectbox("Item para revisar", itens_opcoes, key="item_revisao_lote")
+            mascara_item = detalhes_lote["Item"].astype(str) == str(item_revisao)
+            candidatos_item = detalhes_lote[mascara_item].copy()
+            aprovados_item = int(candidatos_item.get("Aprovado", pd.Series(dtype=bool)).fillna(False).sum())
+            meta_item = meta_para_item(st.session_state.get("lote_regras_meta", []), item_revisao)
+    
+            st.caption(
+                "Meta do item: "
+                + ", ".join(f"{fonte} {meta_item.get(fonte, 0)}" for fonte in FONTES_META_CESTA)
+                + f" | aprovados agora: {aprovados_item}"
+            )
+    
+            if "Origem normalizada" not in candidatos_item.columns:
+                candidatos_item["Origem normalizada"] = candidatos_item["Origem"].map(normalizar_origem_cesta)
+            candidatos_item["Aprovado ordenacao"] = candidatos_item.get("Aprovado", False).fillna(False).astype(bool)
+            motivos_item = candidatos_item.get("Motivo descarte", pd.Series("", index=candidatos_item.index)).fillna("").astype(str)
+            descartados_item = candidatos_item[motivos_item.str.strip() != ""].copy()
+            candidatos_visiveis = candidatos_item[motivos_item.str.strip() == ""].copy()
+            candidatos_visiveis = candidatos_visiveis.sort_values(
+                ["Aprovado ordenacao", "Origem normalizada", "Ordem"],
+                ascending=[False, True, True],
+            )
+            aprovados_visiveis = candidatos_visiveis[candidatos_visiveis["Aprovado ordenacao"]].copy()
+            disponiveis_visiveis = candidatos_visiveis[~candidatos_visiveis["Aprovado ordenacao"]].copy()
+    
+            contagem_origem = (
+                candidatos_item[candidatos_item["Aprovado ordenacao"]]
+                .groupby("Origem normalizada")
+                .size()
+                .to_dict()
+            )
+            st.write(
+                "**Selecionados:** "
+                + ", ".join(
+                    f"{fonte} {int(contagem_origem.get(fonte, 0))}/{int(meta_item.get(fonte, 0) or 0)}"
+                    for fonte in FONTES_META_CESTA
+                )
+            )
 
-    col_ok, col_atencao, col_revisar, col_sem = st.columns(4)
-    col_ok.metric("OK", int((resumo_lote["Status"] == "OK").sum()))
-    col_atencao.metric("Atencao", int((resumo_lote["Status"] == "Atencao").sum()))
-    col_revisar.metric("Revisar", int((resumo_lote["Status"] == "Revisar").sum()))
-    col_sem.metric("Sem resultado", int((resumo_lote["Status"] == "Sem resultado").sum()))
+            valores_aprovados = [
+                converter_numero(valor)
+                for valor in aprovados_visiveis.get("Valor unitario", pd.Series(dtype=float)).tolist()
+            ]
+            valor_metodo, rotulo_metodo = valor_por_metodologia(
+                valores_aprovados,
+                st.session_state.get("lote_metodo", "auto"),
+            )
+            preco_anterior, descricao_anterior = preco_anterior_por_item(
+                item_revisao,
+                st.session_state.get("lote_fontes_historico", []),
+            )
 
-    st.dataframe(resumo_lote, use_container_width=True, hide_index=True)
+            st.markdown("#### Pesquisas classificadas para o dossie")
+            if aprovados_visiveis.empty:
+                st.warning("Nenhum preco aprovado neste item.")
+            else:
+                resumo_cols = st.columns(2)
+                resumo_cols[0].metric(rotulo_metodo, _pdf_formatar_valor(valor_metodo))
+                resumo_cols[1].metric("Preco anterior", _pdf_formatar_valor(preco_anterior))
+                if descricao_anterior:
+                    st.caption(f"Preco anterior identificado no historico proprio: {_texto_curto_tela(descricao_anterior, 180)}")
+    
+            cab = st.columns([0.45, 0.85, 1.25, 4.4, 0.9, 0.75, 1.4, 0.7])
+            cab[0].caption("Acao")
+            cab[1].caption("Status")
+            cab[2].caption("Origem")
+            cab[3].caption("Descricao")
+            cab[4].caption("Valor")
+            cab[5].caption("Qtd")
+            cab[6].caption("Orgao")
+            cab[7].caption("Link")
+    
+            for indice_original, linha in aprovados_visiveis.iterrows():
+                aprovado = bool(linha.get("Aprovado"))
+                with st.container(border=True):
+                    cols = st.columns([0.45, 0.85, 1.25, 4.4, 0.9, 0.75, 1.4, 0.7])
+                    with cols[0]:
+                        if st.button(
+                            "-",
+                            key=f"remover_lote_{item_revisao}_{indice_original}",
+                            help="Remover este resultado e puxar o proximo candidato da mesma origem.",
+                            use_container_width=True,
+                        ):
+                            st.session_state["lote_candidatos"] = aplicar_acao_candidato_lote(
+                                detalhes_lote,
+                                indice_original,
+                                aprovar=False,
+                                item_revisao=item_revisao,
+                            )
+                            st.rerun()
+    
+                    cols[1].write("Aprovado" if aprovado else "Disponivel")
+                    cols[2].write(linha.get("Origem", ""))
+                    cols[3].write(_texto_curto_tela(linha.get("Descricao encontrada", ""), 150))
+                    cols[4].write(_pdf_formatar_valor(linha.get("Valor unitario")))
+                    cols[5].write(linha.get("Quantidade encontrada", ""))
+                    cols[6].write(_texto_curto_tela(linha.get("Orgao", ""), 45))
+                    link = str(linha.get("Link/Evidencia", "") or "")
+                    if link.startswith("http"):
+                        cols[7].link_button("Abrir", link, use_container_width=True)
+                    else:
+                        cols[7].write("-")
+    
+                observacoes = str(linha.get("Observacoes", "") or "").strip()
+                if observacoes:
+                    st.caption(observacoes)
 
-    with st.expander("Precos encontrados por item"):
-        st.dataframe(detalhes_lote, use_container_width=True, hide_index=True)
+            st.markdown("#### Outros candidatos disponiveis")
+            if disponiveis_visiveis.empty:
+                st.info("Nao ha candidatos extras disponiveis para este item.")
+            for indice_original, linha in disponiveis_visiveis.iterrows():
+                with st.container(border=True):
+                    cols = st.columns([0.45, 0.85, 1.25, 4.4, 0.9, 0.75, 1.4, 0.7])
+                    with cols[0]:
+                        if st.button(
+                            "+",
+                            key=f"adicionar_lote_{item_revisao}_{indice_original}",
+                            help="Adicionar este candidato ao dossie aprovado.",
+                            use_container_width=True,
+                            type="primary",
+                        ):
+                            st.session_state["lote_candidatos"] = aplicar_acao_candidato_lote(
+                                detalhes_lote,
+                                indice_original,
+                                aprovar=True,
+                                item_revisao=item_revisao,
+                            )
+                            st.rerun()
+                        if st.button(
+                            "-",
+                            key=f"descartar_lote_{item_revisao}_{indice_original}",
+                            help="Excluir este candidato da lista de revisao.",
+                            use_container_width=True,
+                        ):
+                            st.session_state["lote_candidatos"] = aplicar_acao_candidato_lote(
+                                detalhes_lote,
+                                indice_original,
+                                aprovar=False,
+                                item_revisao=item_revisao,
+                            )
+                            st.rerun()
 
-    for aviso in st.session_state.get("lote_avisos", []):
-        st.warning(aviso)
+                    cols[1].write("Disponivel")
+                    cols[2].write(linha.get("Origem", ""))
+                    cols[3].write(_texto_curto_tela(linha.get("Descricao encontrada", ""), 150))
+                    cols[4].write(_pdf_formatar_valor(linha.get("Valor unitario")))
+                    cols[5].write(linha.get("Quantidade encontrada", ""))
+                    cols[6].write(_texto_curto_tela(linha.get("Orgao", ""), 45))
+                    link = str(linha.get("Link/Evidencia", "") or "")
+                    if link.startswith("http"):
+                        cols[7].link_button("Abrir", link, use_container_width=True)
+                    else:
+                        cols[7].write("-")
 
-    col_pdf_lote, col_excel_lote = st.columns(2)
-    with col_pdf_lote:
-        st.download_button(
-            label="Baixar dossie da pesquisa em PDF",
-            data=st.session_state["lote_pdf"],
-            file_name=f"dossie_pesquisa_precos_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-            mime="application/pdf",
-            use_container_width=True
+                    observacoes = str(linha.get("Observacoes", "") or "").strip()
+                    if observacoes:
+                        st.caption(observacoes)
+    
+            if not descartados_item.empty:
+                with st.expander(f"Resultados descartados neste item ({len(descartados_item)})"):
+                    for indice_original, linha in descartados_item.iterrows():
+                        cols_desc = st.columns([0.55, 1.1, 4.8, 1.0, 1.6])
+                        if cols_desc[0].button(
+                            "+",
+                            key=f"restaurar_lote_{item_revisao}_{indice_original}",
+                            help="Restaurar este resultado para a lista aprovada.",
+                            use_container_width=True,
+                            type="primary",
+                        ):
+                            atualizado = detalhes_lote.copy()
+                            atualizado.loc[indice_original, "Aprovado"] = True
+                            atualizado.loc[indice_original, "Motivo descarte"] = ""
+                            st.session_state["lote_candidatos"] = atualizado
+                            st.rerun()
+                        cols_desc[1].write(linha.get("Origem", ""))
+                        cols_desc[2].write(_texto_curto_tela(linha.get("Descricao encontrada", ""), 150))
+                        cols_desc[3].write(_pdf_formatar_valor(linha.get("Valor unitario")))
+                        cols_desc[4].write(_texto_curto_tela(linha.get("Motivo descarte", ""), 60))
+    
+            col_reaplicar_rev, col_limpar_doc = st.columns(2)
+            with col_reaplicar_rev:
+                if st.button("Reaplicar metas automaticas", use_container_width=True):
+                    st.session_state["lote_candidatos"] = selecionar_aprovados_por_meta(
+                        detalhes_lote,
+                        st.session_state.get("lote_regras_meta", []),
+                    )
+                    st.success("Aprovacoes recalculadas pelas metas.")
+                    st.rerun()
+            with col_limpar_doc:
+                st.info("Use - para retirar um preco ruim. Use + para incluir um candidato extra quando precisar completar a cesta.")
+    
+            with st.expander("Todos os candidatos encontrados"):
+                st.dataframe(detalhes_lote, use_container_width=True, hide_index=True)
+    
+        for aviso in st.session_state.get("lote_avisos", []):
+            st.warning(aviso)
+    
+        gerar_dossie_lote = st.button(
+            "Gerar dossie com os precos aprovados",
+            type="primary",
+            use_container_width=True,
+            disabled=detalhes_lote.empty,
         )
-    with col_excel_lote:
-        st.download_button(
-            label="Baixar base detalhada em Excel",
-            data=st.session_state["lote_excel"],
-            file_name=f"cesta_de_precos_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
-
+    
+        if gerar_dossie_lote:
+            detalhes_aprovados = detalhes_lote[detalhes_lote["Aprovado"] == True].copy()
+            if detalhes_aprovados.empty:
+                st.error("Aprove ao menos um preco antes de gerar o dossie.")
+            else:
+                resumo_revisado = recalcular_resumo_revisado(
+                    resumo_lote,
+                    detalhes_lote,
+                    perfil_codigo=st.session_state.get("lote_perfil_codigo", "joia_rs_5337"),
+                    responsavel=st.session_state.get("lote_responsavel", ""),
+                    metodo_preferido=st.session_state.get("lote_metodo", "auto"),
+                    justificativas=st.session_state.get("lote_justificativas", {}),
+                )
+                detalhes_aprovados = detalhes_aprovados.copy()
+                detalhes_aprovados["Ordem"] = detalhes_aprovados.groupby("Item").cumcount() + 1
+                excel_lote = gerar_excel_cesta(resumo_revisado, detalhes_aprovados)
+                pdf_lote = gerar_pdf_cesta(
+                    resumo_revisado,
+                    detalhes_aprovados,
+                    responsavel=st.session_state.get("lote_responsavel", ""),
+                    metodo=st.session_state.get("lote_metodo", "auto"),
+                    perfil_nome=obter_perfil_normativo(
+                        st.session_state.get("lote_perfil_codigo", "joia_rs_5337")
+                    ).nome,
+                    fontes_selecionadas=st.session_state.get("lote_fontes_selecionadas", []),
+                )
+                st.session_state["lote_resumo_revisado"] = resumo_revisado
+                st.session_state["lote_detalhes"] = detalhes_aprovados
+                st.session_state["lote_excel"] = excel_lote
+                st.session_state["lote_pdf"] = pdf_lote
+                st.success("Dossie gerado somente com os precos aprovados.")
+    
+        if "lote_pdf" in st.session_state and "lote_excel" in st.session_state:
+            st.subheader("Arquivos do dossie aprovado")
+            resumo_final = st.session_state.get("lote_resumo_revisado", resumo_lote)
+            st.dataframe(resumo_final, use_container_width=True, hide_index=True)
+            col_pdf_lote, col_excel_lote = st.columns(2)
+            with col_pdf_lote:
+                st.download_button(
+                    label="Baixar dossie da pesquisa em PDF",
+                    data=st.session_state["lote_pdf"],
+                    file_name=f"dossie_pesquisa_precos_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+            with col_excel_lote:
+                st.download_button(
+                    label="Baixar base aprovada em Excel",
+                    data=st.session_state["lote_excel"],
+                    file_name=f"cesta_de_precos_aprovada_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+    
 if "resultados" in st.session_state:
     criterios = st.session_state["criterios"]
     resultados = st.session_state["resultados"]
