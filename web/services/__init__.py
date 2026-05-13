@@ -1,0 +1,2 @@
+"""Servicos da camada Flask."""
+

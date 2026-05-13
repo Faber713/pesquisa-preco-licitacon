@@ -1,5 +1,5 @@
 import re
-from util import normalizar
+from utils.util import normalizar
 
 
 # =========================

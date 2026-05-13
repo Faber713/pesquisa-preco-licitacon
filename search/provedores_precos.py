@@ -11,8 +11,8 @@ import requests
 from rapidfuzz import fuzz
 
 from app_storage import listar_cotacoes_por_descricao
-from fontes_preco import FontePreco, agora_iso
-from util import converter_numero, normalizar, palavras_fortes, termos_compativeis
+from search.fontes_preco import FontePreco, agora_iso
+from utils.util import converter_numero, normalizar, palavras_fortes, termos_compativeis
 
 
 PNCP_BASE_URL = "https://pncp.gov.br/api/consulta"

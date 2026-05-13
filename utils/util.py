@@ -1,8 +1,9 @@
 import pandas as pd
 import unicodedata
 import re
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
-from config import PALAVRAS_FRACAS
+from utils.config import PALAVRAS_FRACAS
 
 
 # =========================
@@ -87,6 +88,43 @@ def converter_numero(valor):
 
     except:
         return None
+
+
+def formatar_percentual(valor):
+    numero = converter_numero(valor)
+    if numero is None:
+        return "-"
+
+    try:
+        decimal = Decimal(str(numero)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, ValueError):
+        return "-"
+
+    texto = format(decimal, "f")
+    if "." in texto:
+        texto = texto.rstrip("0").rstrip(".")
+    return texto
+
+
+def formatar_moeda_br(valor):
+    numero = converter_numero(valor)
+    if numero is None:
+        return "-"
+
+    try:
+        decimal = Decimal(str(numero)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, ValueError):
+        return "-"
+
+    negativo = decimal < 0
+    decimal = abs(decimal)
+    inteiro, centavos = f"{decimal:.2f}".split(".")
+    partes = []
+    while inteiro:
+        partes.insert(0, inteiro[-3:])
+        inteiro = inteiro[:-3]
+    texto = ".".join(partes) + "," + centavos
+    return f"{'-' if negativo else ''}R$ {texto}"
 
 
 # =========================

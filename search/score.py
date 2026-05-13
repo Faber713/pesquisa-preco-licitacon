@@ -1,6 +1,6 @@
 from rapidfuzz import fuzz
 
-from config import (
+from utils.config import (
     PESO_TEXTO,
     PESO_OBRIGATORIOS,
     PESO_IMPORTANTES,
@@ -8,7 +8,7 @@ from config import (
     TERMOS_GENERICOS
 )
 
-from util import (
+from utils.util import (
     normalizar,
     lista_normalizada,
     contem_termo,

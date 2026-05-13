@@ -3,8 +3,8 @@ import json
 import re
 from openai import OpenAI
 
-from config import MODELO_IA, PALAVRAS_FRACAS
-from util import normalizar
+from utils.config import MODELO_IA, PALAVRAS_FRACAS
+from utils.util import normalizar
 
 
 # =========================

@@ -1,11 +1,11 @@
 import pandas as pd
 from datetime import datetime
 
-from config import MIN_RESULTADOS_DESEJADOS
-from util import escolher_arquivo, converter_numero, normalizar
-from ia_criterios import extrair_criterios_com_ia
-from busca import buscar_item, juntar_resultados
-from html_saida import salvar_html
+from utils.config import MIN_RESULTADOS_DESEJADOS
+from utils.util import escolher_arquivo, converter_numero, normalizar
+from ia.ia_criterios import extrair_criterios_com_ia
+from search.busca import buscar_item, juntar_resultados
+from reports.html_saida import salvar_html
 
 
 def main():

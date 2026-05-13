@@ -15,12 +15,16 @@ import streamlit as st
 import streamlit.components.v1 as components
 from rapidfuzz import fuzz
 
-from config import MIN_RESULTADOS_DESEJADOS, LINK_BASE_LICITACON
-from util import converter_numero, normalizar, palavras_fortes, termos_compativeis
-from ia_criterios import extrair_criterios_com_ia
-from busca import buscar_item, juntar_resultados
-from html_saida import salvar_html
-from normativos import (
+from utils.config import MIN_RESULTADOS_DESEJADOS, LINK_BASE_LICITACON
+from utils.util import converter_numero, normalizar, palavras_fortes, termos_compativeis
+from ia.ia_criterios import extrair_criterios_com_ia
+from search.busca import buscar_item, juntar_resultados
+from search.sqlite_repository import (
+    base_sqlite_disponivel as repo_base_sqlite_disponivel,
+    carregar_candidatos_runtime as repo_carregar_candidatos_runtime,
+)
+from reports.html_saida import salvar_html
+from ia.normativos import (
     avaliar_conformidade_pesquisa,
     extrair_texto_normativo,
     formatar_moeda,
@@ -42,13 +46,13 @@ from app_storage import (
     listar_usuarios,
     salvar_pesquisa,
 )
-from fontes_preco import (
+from search.fontes_preco import (
     FontePreco,
     fonte_para_resultado,
     fontes_para_dataframe_linhas,
     resultado_licitacon_para_fonte,
 )
-from provedores_precos import buscar_fornecedores, buscar_pncp, buscar_web
+from search.provedores_precos import buscar_fornecedores, buscar_pncp, buscar_web
 from app_auth import exigir_login, gerar_hash_senha
 
 
@@ -62,6 +66,10 @@ def config_valor(chave, padrao=""):
 
 
 CAMINHO_SQLITE = Path(config_valor("LICITACON_SQLITE_PATH", "licitacon.sqlite"))
+SEARCH_DB_MODE = str(config_valor("SEARCH_DB_MODE", "auto")).strip().lower()
+if SEARCH_DB_MODE not in {"auto", "raw", "operational"}:
+    SEARCH_DB_MODE = "auto"
+SEARCH_DB_PATH = Path(config_valor("SEARCH_DB_PATH", "database/operational/licitacon_search.sqlite"))
 MAX_CANDIDATOS_SQLITE = 15000
 MAX_CANDIDATOS_LOTE = 5000
 MUNICIPIO_PROPRIO_PADRAO = "Joia"
@@ -127,15 +135,14 @@ def carregar_csv(arquivo_enviado):
 
 
 def base_sqlite_disponivel():
-    if not CAMINHO_SQLITE.exists():
-        return False, f"Arquivo da base LicitaCon nao encontrado: {CAMINHO_SQLITE}"
+    if SEARCH_DB_MODE in {"auto", "operational"} and SEARCH_DB_PATH.exists():
+        ok_operacional, msg_operacional = repo_base_sqlite_disponivel(SEARCH_DB_PATH)
+        if ok_operacional:
+            return True, ""
+        if SEARCH_DB_MODE == "operational":
+            return False, msg_operacional
 
-    try:
-        with sqlite3.connect(CAMINHO_SQLITE) as con:
-            con.execute("SELECT 1 FROM base_pesquisa LIMIT 1").fetchone()
-        return True, ""
-    except Exception as erro:
-        return False, f"Nao foi possivel abrir a base SQLite: {erro}"
+    return repo_base_sqlite_disponivel(CAMINHO_SQLITE)
 
 
 def tabela_sqlite_existe(nome_tabela):
@@ -232,6 +239,26 @@ def carregar_candidatos_sqlite(
     tabela="base_pesquisa",
     excluir_municipio=MUNICIPIO_PROPRIO_PADRAO,
 ):
+    if SEARCH_DB_MODE in {"auto", "operational"}:
+        if tabela == "base_historica_municipios" and SEARCH_DB_MODE == "operational":
+            return pd.DataFrame()
+        try:
+            return repo_carregar_candidatos_runtime(
+                descricao_busca=descricao_busca,
+                criterios=criterios,
+                limite=limite,
+                mode=SEARCH_DB_MODE,
+                raw_path=str(CAMINHO_SQLITE),
+                operational_path=str(SEARCH_DB_PATH),
+                tabela=tabela,
+                excluir_municipio=excluir_municipio,
+                ordenar_por_relevancia=False,
+            )
+        except Exception as erro:
+            if SEARCH_DB_MODE == "operational":
+                raise
+            print(f"Falha na busca operacional; usando SQL legado: {erro}")
+
     if tabela not in TABELAS_SQLITE_BUSCA:
         raise ValueError(f"Tabela de busca nao permitida: {tabela}")
 

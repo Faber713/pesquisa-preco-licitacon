@@ -4,7 +4,7 @@ from statistics import mean, median
 import re
 import zlib
 
-from util import converter_numero
+from utils.util import converter_numero
 
 
 @dataclass(frozen=True)

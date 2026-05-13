@@ -1,4 +1,4 @@
-from config import (
+from utils.config import (
     LIMIAR_RIGIDO,
     LIMIAR_RELAXADO,
     LIMIAR_AMPLO,
@@ -9,10 +9,10 @@ from config import (
     LIMIAR_AMPLO_SEM_QTD
 )
 
-from regras_tecnicas import validar_regras_tecnicas
-from regras_produtos_eletricos import validar_produto_eletrico
-from util import pegar_coluna, converter_numero, palavras_fortes, termos_compativeis, normalizar
-from score import calcular_score
+from ia.regras_tecnicas import validar_regras_tecnicas
+from ia.regras_produtos_eletricos import validar_produto_eletrico
+from utils.util import pegar_coluna, converter_numero, palavras_fortes, termos_compativeis, normalizar
+from search.score import calcular_score
 
 
 # ============================================================

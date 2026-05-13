@@ -2,7 +2,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-from fontes_preco import agora_iso
+from search.fontes_preco import agora_iso
 
 
 CAMINHO_APP_DB = Path(os.getenv("APP_DB_PATH", "pesquisa_precos_app.sqlite"))

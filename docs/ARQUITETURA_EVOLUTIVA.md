@@ -5,7 +5,7 @@ Este documento define uma evolucao incremental para transformar o projeto atual 
 ## Principios
 
 - Nao reescrever do zero.
-- Preservar os pontos de entrada atuais, especialmente `app_web.py`, `busca.py` e importadores.
+- Preservar os pontos de entrada atuais, especialmente `app_web.py`, `search/busca.py` e importadores.
 - Extrair responsabilidades aos poucos, com adaptadores finos entre codigo legado e novos servicos.
 - Manter rastreabilidade: toda decisao de compatibilidade, descarte, fonte e metodologia deve poder ser explicada em auditoria.
 - Separar busca de candidatos, avaliacao tecnica, formacao de cesta, conformidade normativa e apresentacao.
@@ -14,13 +14,13 @@ Este documento define uma evolucao incremental para transformar o projeto atual 
 
 O sistema ja possui os blocos essenciais:
 
-- `ia_criterios.py`: interpretacao da descricao e extracao de criterios.
-- `busca.py`: varredura de candidatos, filtros de homologacao, quantidade e aderencia.
-- `score.py`: pontuacao textual e tecnica.
-- `regras_tecnicas.py` e `regras_produtos_eletricos.py`: validacoes especializadas.
-- `provedores_precos.py`: fontes externas como PNCP, web e fornecedores.
-- `fontes_preco.py`: normalizacao de fontes.
-- `normativos.py`: conformidade, perfis normativos e relatorios.
+- `ia/ia_criterios.py`: interpretacao da descricao e extracao de criterios.
+- `search/busca.py`: varredura de candidatos, filtros de homologacao, quantidade e aderencia.
+- `search/score.py`: pontuacao textual e tecnica.
+- `ia/regras_tecnicas.py` e `ia/regras_produtos_eletricos.py`: validacoes especializadas.
+- `search/provedores_precos.py`: fontes externas como PNCP, web e fornecedores.
+- `search/fontes_preco.py`: normalizacao de fontes.
+- `ia/normativos.py`: conformidade, perfis normativos e relatorios.
 - `app_storage.py`: persistencia da aplicacao.
 - `app_web.py`: UI, orquestracao, processamento em lote, relatorios e parte da busca SQLite.
 
@@ -31,37 +31,26 @@ O principal risco arquitetural hoje e que `app_web.py` concentra muitas responsa
 Estrutura sugerida para evolucao gradual:
 
 ```text
-pesquisa_precos/
-  core/
-    criterios.py
-    matching.py
-    scoring.py
-    regras.py
-    normalizacao.py
-  search/
-    pipeline.py
-    sqlite_repository.py
-    fts.py
-    filtros.py
-  providers/
-    licitacon.py
-    pncp.py
-    web.py
-    fornecedores.py
-  compliance/
-    normativos.py
-    auditoria.py
-  storage/
-    app_db.py
-    migrations.py
-  reports/
-    html.py
-    excel.py
-    pdf.py
-  web/
-    streamlit_app.py
-  api/
-    routes.py
+database/
+search/
+  busca.py
+  score.py
+  fontes_preco.py
+  provedores_precos.py
+  sqlite_repository.py
+  pipeline.py
+  fts.py
+  filtros.py
+ia/
+  ia_criterios.py
+  regras_tecnicas.py
+  regras_produtos_eletricos.py
+  normativos.py
+  conformidade_joia.py
+reports/
+utils/
+web/
+docs/
 ```
 
 No primeiro momento, estes arquivos podem apenas importar e encapsular funcoes existentes. A migracao real acontece modulo por modulo.
@@ -161,8 +150,8 @@ Essas APIs internas permitem migrar depois para Flask, FastAPI ou outro frontend
 
 ### Fase 1 - Organizacao Sem Quebra
 
-- Criar pacote `pesquisa_precos/`.
-- Criar wrappers que chamam os modulos atuais.
+- Criar pacotes top-level por responsabilidade: `utils/`, `ia/`, `search/`, `database/`, `reports/` e `web/`.
+- Mover os modulos atuais para esses pacotes, corrigindo imports sem manter copias paralelas.
 - Mover logica pura de `app_web.py` para servicos novos, mantendo imports antigos funcionando.
 - Adicionar testes pequenos para normalizacao, score e filtros criticos.
 

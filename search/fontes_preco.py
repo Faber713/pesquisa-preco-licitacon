@@ -1,7 +1,7 @@
 from dataclasses import asdict, dataclass
 from datetime import datetime
 
-from util import converter_numero
+from utils.util import converter_numero
 
 
 @dataclass

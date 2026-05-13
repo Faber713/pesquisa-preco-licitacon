@@ -1,4 +1,4 @@
-from util import normalizar
+from utils.util import normalizar
 
 
 def contem(texto, termo):

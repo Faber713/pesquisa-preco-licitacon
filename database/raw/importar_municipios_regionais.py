@@ -5,7 +5,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from importar_licitacon import (
+from database.raw.importar_licitacon import (
     ARQUIVOS_OBRIGATORIOS,
     colunas_unicas,
     configurar_conexao,
