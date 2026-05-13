@@ -1,8 +1,6 @@
 import pandas as pd
 import unicodedata
 import re
-#from tkinter import Tk
-#from tkinter.filedialog import askopenfilename
 
 from config import PALAVRAS_FRACAS
 
@@ -45,18 +43,12 @@ def lista_normalizada(lista):
 # =========================
 
 def escolher_arquivo():
-     return None
-    #Tk().withdraw()
-   # arquivo = askopenfilename(
-      #  title="Selecione o arquivo CSV do LicitaCon",
-        #filetypes=[("Arquivos CSV", "*.csv")]
-   # )
+    """Compatibilidade com a versao desktop.
 
-    #if not arquivo:
-      #  print("Nenhum arquivo selecionado.")
-       # return None
-
-   # return arquivo
+    No Streamlit, os arquivos sao enviados por st.file_uploader em app_web.py.
+    Manter esta funcao retornando None evita depender de tkinter no ambiente web.
+    """
+    return None
 
 
 # =========================

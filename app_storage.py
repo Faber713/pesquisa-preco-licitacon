@@ -1,10 +1,11 @@
+import os
 import sqlite3
 from pathlib import Path
 
 from fontes_preco import agora_iso
 
 
-CAMINHO_APP_DB = Path("pesquisa_precos_app.sqlite")
+CAMINHO_APP_DB = Path(os.getenv("APP_DB_PATH", "pesquisa_precos_app.sqlite"))
 
 
 def conectar_app_db():

@@ -52,7 +52,16 @@ from provedores_precos import buscar_fornecedores, buscar_pncp, buscar_web
 from app_auth import exigir_login, gerar_hash_senha
 
 
-CAMINHO_SQLITE = Path("licitacon.sqlite")
+def config_valor(chave, padrao=""):
+    if os.getenv(chave) is not None:
+        return os.getenv(chave, padrao)
+    try:
+        return st.secrets.get(chave, padrao)
+    except Exception:
+        return padrao
+
+
+CAMINHO_SQLITE = Path(config_valor("LICITACON_SQLITE_PATH", "licitacon.sqlite"))
 MAX_CANDIDATOS_SQLITE = 15000
 MAX_CANDIDATOS_LOTE = 5000
 MUNICIPIO_PROPRIO_PADRAO = "Joia"
@@ -119,7 +128,7 @@ def carregar_csv(arquivo_enviado):
 
 def base_sqlite_disponivel():
     if not CAMINHO_SQLITE.exists():
-        return False, "Arquivo licitacon.sqlite nao encontrado."
+        return False, f"Arquivo da base LicitaCon nao encontrado: {CAMINHO_SQLITE}"
 
     try:
         with sqlite3.connect(CAMINHO_SQLITE) as con:
