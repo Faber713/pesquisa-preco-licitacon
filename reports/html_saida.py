@@ -1,5 +1,5 @@
 from html import escape
-from utils.config import MAX_RESULTADOS, LINK_BASE_LICITACON
+from config.app_settings import MAX_RESULTADOS, LINK_BASE_LICITACON
 from utils.util import formatar_moeda_br, formatar_percentual, preparar_js
 
 

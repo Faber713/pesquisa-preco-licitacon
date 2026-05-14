@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% set page_title = "Nova interface web" %}
+
+{% block content %}
+  <section class="panel">
+    <div class="panel-header">
+      <div>
+        <p class="eyebrow">Fundacao Flask</p>
+        <h2>Camada web inicial ativa</h2>
+      </div>
+      <span class="tag">MVP</span>
+    </div>
+
+    <p>
+      Esta interface Flask esta coexistindo com o Streamlit enquanto as telas sao
+      migradas gradualmente para uma aplicacao web tradicional.
+    </p>
+
+    <div class="grid">
+      <article class="metric">
+        <span>Backend</span>
+        <strong>Modular</strong>
+        <small>Consumindo pacotes existentes</small>
+      </article>
+      <article class="metric">
+        <span>Busca</span>
+        <strong>Preservada</strong>
+        <small>Sem reimplementar regras</small>
+      </article>
+      <article class="metric">
+        <span>Proxima tela</span>
+        <strong>Pesquisa</strong>
+        <small>Formulario conectado ao search/</small>
+      </article>
+    </div>
+  </section>
+{% endblock %}
+

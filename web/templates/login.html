@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Login - Pesquisa de Precos</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+  </head>
+  <body class="auth-page">
+    <main class="auth-shell">
+      <section class="auth-panel">
+        <div class="brand auth-brand">
+          <span class="brand-mark">P</span>
+          <div>
+            <strong>Pesquisa</strong>
+            <small>Precos publicos</small>
+          </div>
+        </div>
+        <h1>Entrar</h1>
+        <p>Acesse o sistema de pesquisa de precos e formacao de cesta.</p>
+
+        {% if erro %}
+          <div class="alert">{{ erro }}</div>
+        {% endif %}
+
+        <form class="auth-form" method="post" action="{{ url_for('auth.login') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="next" value="{{ next_url }}">
+          <label class="field">
+            <span>Email</span>
+            <input type="email" name="email" required autofocus>
+          </label>
+          <label class="field">
+            <span>Senha</span>
+            <input type="password" name="senha" required>
+          </label>
+          <button class="primary-button" type="submit">Entrar</button>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>

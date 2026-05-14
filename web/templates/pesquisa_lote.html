@@ -1,0 +1,280 @@
+{% extends "base.html" %}
+
+{% set page_title = "Pesquisa em lote" %}
+
+{% block content %}
+  <section class="panel batch-panel">
+    <div class="panel-header">
+      <div>
+        <p class="eyebrow">Cesta de compras · até 100 itens</p>
+        <h2>Mini planilha de itens</h2>
+      </div>
+      {% if resumo %}
+        <span class="tag">{{ resumo.sucesso }}/{{ resumo.itens_validos }} processado(s)</span>
+      {% endif %}
+    </div>
+
+    <form id="batch-form" method="post" action="{{ url_for('pesquisa_lote.pesquisa_lote') }}">
+      <div class="batch-toolbar">
+        <label class="field tolerance-field">
+          <span>Percentual de tolerância (%)</span>
+          <input type="text" name="tolerancia_percentual" value="{{ tolerancia_percentual }}" inputmode="decimal">
+        </label>
+        <label class="field tolerance-field">
+          <span>Quantidade de pesquisas por item</span>
+          <input type="number" name="quantidade_resultados" value="{{ quantidade_resultados }}" min="1" max="50">
+        </label>
+        <button class="secondary-button" type="button" id="add-row">Adicionar linha</button>
+        <button class="primary-button" type="submit" id="submit-batch">Pesquisar lote</button>
+      </div>
+
+      <div class="source-picker">
+        <label class="source-option">
+          <input type="checkbox" name="desconsiderar_orgao_origem" value="1" {{ 'checked' if desconsiderar_orgao_origem else '' }}>
+          <span>Desconsiderar orgao de origem</span>
+        </label>
+        <label class="field">
+          <span>Orgao de origem</span>
+          <input type="text" name="orgao_origem" value="{{ orgao_origem }}">
+        </label>
+        <label class="source-option">
+          <input type="checkbox" name="fontes" value="licitacon" checked>
+          <span>LicitaCon RS</span>
+        </label>
+        <label class="source-option">
+          <input type="checkbox" name="fontes" value="pncp">
+          <span>PNCP</span>
+        </label>
+        <label class="source-option disabled">
+          <input type="checkbox" disabled>
+          <span>Internet <small>Em implementaÃ§Ã£o</small></span>
+        </label>
+        <label class="source-option disabled">
+          <input type="checkbox" disabled>
+          <span>Fornecedores cadastrados <small>Em implementaÃ§Ã£o</small></span>
+        </label>
+      </div>
+
+      <div class="period-filter">
+        <span class="label">Periodo da pesquisa</span>
+        <label class="source-option">
+          <input type="radio" name="periodo_pesquisa" value="6m" {{ 'checked' if periodo_pesquisa == '6m' else '' }}>
+          <span>Ultimos 6 meses</span>
+        </label>
+        <label class="source-option">
+          <input type="radio" name="periodo_pesquisa" value="12m" {{ 'checked' if periodo_pesquisa == '12m' else '' }}>
+          <span>Ultimos 12 meses</span>
+        </label>
+        <label class="source-option">
+          <input type="radio" name="periodo_pesquisa" value="personalizado" {{ 'checked' if periodo_pesquisa == 'personalizado' else '' }}>
+          <span>Personalizado</span>
+        </label>
+        <label class="field period-custom">
+          <span>Data inicial</span>
+          <input type="date" name="data_inicial" value="{{ data_inicial }}">
+        </label>
+        <label class="field period-custom">
+          <span>Data final</span>
+          <input type="date" name="data_final" value="{{ data_final }}">
+        </label>
+      </div>
+
+      <div class="sheet-status" id="sheet-status" data-operational-limit="100"></div>
+
+      <div class="batch-progress" id="batch-progress" aria-live="polite">
+        <div class="progress-track">
+          <div class="progress-bar" id="batch-progress-bar"></div>
+        </div>
+        <p class="progress-label" id="batch-progress-label">Preparando pesquisa em lote...</p>
+      </div>
+
+      <div class="sheet-wrap">
+        <table class="sheet-table" id="batch-table">
+          <thead>
+            <tr>
+              <th class="col-item">Item</th>
+              <th>Descrição</th>
+              <th class="col-qtd">Quantidade</th>
+              <th class="col-actions"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for linha in linhas_planilha %}
+              <tr>
+                <td><input class="item-number sheet-cell" type="text" name="item_numero[]" value="{{ linha.numero }}"></td>
+                <td><input class="sheet-cell description-cell" type="text" name="descricao[]" value="{{ linha.descricao }}" placeholder="Descrição do item"></td>
+                <td><input class="sheet-cell quantity-cell" type="text" name="quantidade[]" value="{{ linha.quantidade }}" inputmode="decimal" placeholder="0"></td>
+                <td><button class="icon-button remove-row" type="button" title="Remover linha">×</button></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <p class="hint">Cole direto do Excel/LibreOffice: ITEM, DESCRIÇÃO e QUANTIDADE serão distribuídos automaticamente.</p>
+    </form>
+  </section>
+
+  {% if resumo %}
+    <section class="panel panel-spaced">
+      {% if pesquisa_id %}
+        <p class="search-diagnostics">Pesquisa em lote salva no historico com ID {{ pesquisa_id }}.</p>
+      {% endif %}
+      <div class="stats-row">
+        <div><strong>{{ resumo.itens_validos }}</strong><span>Itens válidos</span></div>
+        <div><strong>{{ resumo.sucesso }}</strong><span>Com sucesso</span></div>
+        <div><strong>{{ resumo.erros }}</strong><span>Com erro</span></div>
+        <div><strong>{{ resumo.tempo_total_ms }}</strong><span>Tempo total ms</span></div>
+      </div>
+    </section>
+  {% endif %}
+
+  {% if erros %}
+    <section class="panel panel-spaced">
+      <div class="panel-header">
+        <div>
+          <p class="eyebrow">Validação</p>
+          <h2>Linhas ignoradas</h2>
+        </div>
+      </div>
+      <div class="error-list">
+        {% for erro in erros %}
+          <div class="alert">Linha {{ erro.linha }}: {{ erro.erro }} <small>{{ erro.texto }}</small></div>
+        {% endfor %}
+      </div>
+    </section>
+  {% endif %}
+
+  {% for bloco in resultados_lote %}
+    <section class="panel panel-spaced batch-item">
+      <div class="panel-header">
+        <div>
+          <p class="eyebrow">Item {{ bloco.item.numero or bloco.item.linha }} · {{ bloco.tempo_item_ms }} ms</p>
+          <h2>{{ bloco.item.descricao }}</h2>
+          {% if bloco.item.quantidade %}
+            <p>
+              Quantidade original: {{ bloco.item.quantidade_txt }}
+              · tolerância: {{ bloco.item.tolerancia_percentual|percentual }}%
+              · faixa: {{ bloco.item.qtd_min_txt }} a {{ bloco.item.qtd_max_txt }}
+            </p>
+          {% else %}
+            <p>Faixa: {{ bloco.item.qtd_min_txt }} a {{ bloco.item.qtd_max_txt }}</p>
+          {% endif %}
+        </div>
+        {% if bloco.estatisticas %}
+          <span class="tag">{{ bloco.estatisticas.total }} resultado(s)</span>
+        {% endif %}
+      </div>
+
+      {% if bloco.erro %}
+        <div class="alert">{{ bloco.erro }}</div>
+      {% else %}
+        <div class="criteria-grid compact">
+          <div>
+            <span class="label">Descrição sugerida</span>
+            <p>{{ bloco.criterios.descricao_sugerida_licitacon or "-" }}</p>
+          </div>
+          <div>
+            <span class="label">Obrigatórios</span>
+            <p>{{ bloco.criterios.termos_obrigatorios|join(", ") if bloco.criterios.termos_obrigatorios else "-" }}</p>
+          </div>
+          <div>
+            <span class="label">SQLite</span>
+            {% if bloco.estatisticas.sqlite_search %}
+              <p>
+                {{ bloco.estatisticas.sqlite_search.banco|upper }}
+                · {{ bloco.estatisticas.sqlite_search.estrategia|upper }}
+                · {{ bloco.estatisticas.sqlite_search.tempo_ms }} ms
+                · {{ bloco.estatisticas.sqlite_search.candidatos }} candidatos
+              </p>
+            {% else %}
+              <p>-</p>
+            {% endif %}
+          </div>
+        </div>
+
+        {% if bloco.resultados %}
+          <div class="batch-results">
+            {% for r in bloco.resultados %}
+              <article class="result-card compact-card">
+                <div class="result-score">
+                  <strong>{{ (r.score|percentual) ~ "%" if r.score is not none else "-" }}</strong>
+                  <span>{{ r.modo_busca }}</span>
+                </div>
+                <div class="result-body">
+                  <div class="result-meta">
+                    <span>{{ r.orgao or "Órgão não informado" }}</span>
+                    <span>{{ r.modalidade or "-" }}</span>
+                    <span>{{ r.ano or "-" }}</span>
+                    {% if r.link_licitacon %}
+                      <a class="source-link" href="{{ r.link_licitacon }}" target="_blank" rel="noopener">{{ r.fonte_base or "LicitaCon RS" }}</a>
+                    {% else %}
+                      <span>{{ r.fonte_base or "LicitaCon RS" }} (sem link)</span>
+                    {% endif %}
+                  </div>
+                  <h3>{{ r.descricao }}</h3>
+                  <dl class="result-grid">
+                    <div>
+                      <dt>Valor</dt>
+                      <dd>{{ r.valor_unitario|moeda_br }}</dd>
+                    </div>
+                    <div>
+                      <dt>Quantidade encontrada</dt>
+                      <dd>{{ r.qtd or "-" }} {{ r.unidade or "" }}</dd>
+                    </div>
+                    <div>
+                      <dt>Fornecedor</dt>
+                      <dd>{{ r.vencedor or "-" }}</dd>
+                    </div>
+                  </dl>
+                  <div class="result-actions">
+                    <form method="post" action="{{ url_for('cesta.adicionar') }}">
+                      <input type="hidden" name="return_to" value="{{ request.full_path }}">
+                      <input type="hidden" name="item_uid" value="{{ bloco.item.item_uid }}">
+                      <input type="hidden" name="item_numero" value="{{ bloco.item.numero or bloco.item.linha }}">
+                      <input type="hidden" name="resultados_alvo" value="{{ quantidade_resultados }}">
+                      <input type="hidden" name="total_itens_cesta" value="{{ resultados_lote|length }}">
+                      <input type="hidden" name="resultado_uid" value="{{ r.resultado_uid }}">
+                      <input type="hidden" name="item_pesquisado" value="{{ bloco.item.descricao }}">
+                      <input type="hidden" name="quantidade_item" value="{{ bloco.item.quantidade_txt }}">
+                      <input type="hidden" name="descricao" value="{{ r.descricao }}">
+                      <input type="hidden" name="orgao" value="{{ r.orgao or '' }}">
+                      <input type="hidden" name="fornecedor" value="{{ r.vencedor or '' }}">
+                      <input type="hidden" name="valor_unitario" value="{{ r.valor_unitario or '' }}">
+                      <input type="hidden" name="quantidade" value="{{ r.qtd or '' }}">
+                      <input type="hidden" name="score" value="{{ r.score or '' }}">
+                      <input type="hidden" name="fonte" value="{{ r.fonte_base or 'LicitaCon RS' }}">
+                      <input type="hidden" name="link_origem" value="{{ r.link_licitacon or '' }}">
+                      <input type="hidden" name="modalidade" value="{{ r.modalidade or '' }}">
+                      <input type="hidden" name="ano" value="{{ r.ano or '' }}">
+                      <input type="hidden" name="processo" value="{{ r.processo or '' }}">
+                      <button class="secondary-button slim" type="submit">+ adicionar</button>
+                    </form>
+                    <form method="post" action="{{ url_for('cesta.remover') }}">
+                      <input type="hidden" name="return_to" value="{{ request.full_path }}">
+                      <input type="hidden" name="item_uid" value="{{ bloco.item.item_uid }}">
+                      <input type="hidden" name="resultado_uid" value="{{ r.resultado_uid }}">
+                      <input type="hidden" name="item_pesquisado" value="{{ bloco.item.descricao }}">
+                      <input type="hidden" name="descricao" value="{{ r.descricao }}">
+                      <input type="hidden" name="orgao" value="{{ r.orgao or '' }}">
+                      <input type="hidden" name="fornecedor" value="{{ r.vencedor or '' }}">
+                      <input type="hidden" name="valor_unitario" value="{{ r.valor_unitario or '' }}">
+                      <input type="hidden" name="fonte" value="{{ r.fonte_base or 'LicitaCon RS' }}">
+                      <input type="hidden" name="link_origem" value="{{ r.link_licitacon or '' }}">
+                      <input type="hidden" name="ano" value="{{ r.ano or '' }}">
+                      <button class="secondary-button slim" type="submit">- remover</button>
+                    </form>
+                  </div>
+                </div>
+              </article>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p>Nenhum resultado compatível encontrado para este item.</p>
+        {% endif %}
+      {% endif %}
+    </section>
+  {% endfor %}
+
+  <script src="{{ url_for('static', filename='js/lote.js') }}"></script>
+{% endblock %}

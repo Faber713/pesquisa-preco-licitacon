@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% set page_title = "Usuarios" %}
+
+{% block content %}
+  <section class="panel">
+    <div class="panel-header">
+      <div>
+        <p class="eyebrow">Acessos</p>
+        <h2>Gestao de usuarios</h2>
+      </div>
+      <a class="primary-button compact-button" href="{{ url_for('admin.novo_usuario') }}">Novo usuario</a>
+    </div>
+
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Nome</th>
+            <th>Email</th>
+            <th>Perfil</th>
+            <th>Status</th>
+            <th>Ultimo login</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for usuario in usuarios %}
+            <tr>
+              <td>{{ usuario.nome }}</td>
+              <td>{{ usuario.email }}</td>
+              <td>{{ usuario.perfil }}</td>
+              <td>{{ "Ativo" if usuario.ativo else "Inativo" }}</td>
+              <td>{{ usuario.ultimo_login or "-" }}</td>
+              <td><a class="secondary-button slim" href="{{ url_for('admin.editar_usuario', usuario_id=usuario.id) }}">Editar</a></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+{% endblock %}

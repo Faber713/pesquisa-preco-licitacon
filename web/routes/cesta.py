@@ -1,5 +1,8 @@
 from flask import Blueprint, jsonify, redirect, render_template, request, url_for
 
+from auth.decorators import login_required
+from auth.session_manager import usuario_atual
+from storage.app_storage import registrar_auditoria
 from web.services.cesta_service import (
     adicionar_preco,
     agrupar_cesta_por_item,
@@ -53,12 +56,17 @@ def _resposta_cesta():
 
 
 @cesta_bp.post("/adicionar")
+@login_required
 def adicionar():
     adicionar_preco(request.form)
+    usuario = usuario_atual()
+    if usuario:
+        registrar_auditoria(usuario.get("id"), "cesta_adicionar", "cesta", request.form.get("item_uid", ""), dict(request.form), request.remote_addr)
     return _resposta_cesta()
 
 
 @cesta_bp.post("/remover")
+@login_required
 def remover():
     if request.form.get("id"):
         remover_preco(request.form.get("id", ""), request.form.get("item_uid", ""))
@@ -68,6 +76,7 @@ def remover():
 
 
 @cesta_bp.post("/considerar")
+@login_required
 def considerar():
     definir_consideracao(
         request.form.get("id", ""),
@@ -79,30 +88,38 @@ def considerar():
 
 
 @cesta_bp.post("/metodologia")
+@login_required
 def metodologia():
     definir_metodologia(request.form.get("metodologia_formacao_preco", "mediana"))
     return _resposta_cesta()
 
 
 @cesta_bp.post("/finalizar-item")
+@login_required
 def finalizar():
     finalizar_item(request.form.get("item_uid", ""))
     return _resposta_cesta()
 
 
 @cesta_bp.post("/editar-item")
+@login_required
 def editar():
     editar_item(request.form.get("item_uid", ""))
     return _resposta_cesta()
 
 
 @cesta_bp.post("/remover-item")
+@login_required
 def remover_item_rota():
     remover_item(request.form.get("item_uid", ""))
     return _resposta_cesta()
 
 
 @cesta_bp.post("/limpar")
+@login_required
 def limpar():
     limpar_cesta()
+    usuario = usuario_atual()
+    if usuario:
+        registrar_auditoria(usuario.get("id"), "cesta_limpar", "cesta", "", {}, request.remote_addr)
     return _resposta_cesta()

@@ -3,7 +3,8 @@ import unicodedata
 import re
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
-from utils.config import PALAVRAS_FRACAS
+from config.app_settings import PALAVRAS_FRACAS
+from utils.normalization import normalizar_texto
 
 
 # =========================
@@ -11,28 +12,7 @@ from utils.config import PALAVRAS_FRACAS
 # =========================
 
 def normalizar(texto):
-    texto = str(texto).lower()
-    texto = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode("utf-8")
-    texto = re.sub(r"[^a-z0-9\s]", " ", texto)
-    texto = re.sub(r"\s+", " ", texto).strip()
-
-    correcoes = {
-        "amper metro": "amperimetro",
-        "anal gico": "analogico",
-        "anal gica": "analogica",
-        "lumin ria": "luminaria",
-        "p blica": "publica",
-        "el trico": "eletrico",
-        "el trica": "eletrica",
-        "rel ": "rele ",
-        "f cio": "facil",
-        "a o": "aco",
-    }
-
-    for errado, certo in correcoes.items():
-        texto = texto.replace(errado, certo)
-
-    return texto
+    return normalizar_texto(texto)
 
 
 def lista_normalizada(lista):
@@ -46,7 +26,7 @@ def lista_normalizada(lista):
 def escolher_arquivo():
     """Compatibilidade com a versao desktop.
 
-    No Streamlit, os arquivos sao enviados por st.file_uploader em app_web.py.
+    Na aplicacao Flask, uploads sao tratados pelas rotas e services de `web/`.
     Manter esta funcao retornando None evita depender de tkinter no ambiente web.
     """
     return None

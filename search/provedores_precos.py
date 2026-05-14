@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta
 import requests
 from rapidfuzz import fuzz
 
-from app_storage import listar_cotacoes_por_descricao
+from storage.app_storage import listar_cotacoes_por_descricao
 from search.fontes_preco import FontePreco, agora_iso
 from utils.util import converter_numero, normalizar, palavras_fortes, termos_compativeis
 

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ title or app_name }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark">P</span>
+          <div>
+            <strong>Pesquisa</strong>
+            <small>Precos publicos</small>
+          </div>
+        </div>
+
+        <nav class="nav">
+          <a class="nav-link {{ 'active' if request.endpoint == 'main.index' else '' }}" href="{{ url_for('main.index') }}">Inicio</a>
+          <a class="nav-link {{ 'active' if request.endpoint == 'pesquisa.pesquisa' else '' }}" href="{{ url_for('pesquisa.pesquisa') }}">Pesquisa Individual</a>
+          <a class="nav-link {{ 'active' if request.endpoint == 'pesquisa_lote.pesquisa_lote' else '' }}" href="{{ url_for('pesquisa_lote.pesquisa_lote') }}">Pesquisa em Lote</a>
+          <a class="nav-link {{ 'active' if request.endpoint == 'dossie.dossie' else '' }}" href="{{ url_for('dossie.dossie') }}">Dossies</a>
+          <span class="nav-link disabled">Fontes</span>
+          {% if usuario_logado and usuario_logado.perfil == "admin" %}
+            <a class="nav-link {{ 'active' if request.endpoint and request.endpoint.startswith('admin.') else '' }}" href="{{ url_for('admin.painel') }}">Admin</a>
+          {% endif %}
+        </nav>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Prefeitura de Joia/RS</p>
+            <h1>{{ page_title or app_name }}</h1>
+          </div>
+          <div class="topbar-actions">
+            {% if usuario_logado %}
+              <span class="status-pill">{{ usuario_logado.nome }}</span>
+              <form method="post" action="{{ url_for('auth.logout') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button class="secondary-button slim" type="submit">Sair</button>
+              </form>
+            {% else %}
+              <a class="secondary-button slim" href="{{ url_for('auth.login') }}">Entrar</a>
+            {% endif %}
+          </div>
+        </header>
+
+        {% block content %}{% endblock %}
+      </main>
+
+      {% include "partials/cesta_panel.html" %}
+    </div>
+
+    <button class="basket-float" type="button" data-basket-open>
+      <span>Cesta</span>
+      <strong data-basket-counter>{{ cesta_resumo.total }}</strong>
+    </button>
+    <div class="basket-backdrop" data-basket-backdrop></div>
+    <script src="{{ url_for('static', filename='js/cesta.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/filtros.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/api.js') }}"></script>
+  </body>
+</html>

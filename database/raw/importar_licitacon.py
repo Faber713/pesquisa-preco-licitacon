@@ -5,12 +5,37 @@ import sqlite3
 import time
 from pathlib import Path
 
+from database.paths import DEFAULT_RAW_DB_PATH, garantir_diretorios_database, path_str
 
-ARQUIVOS_OBRIGATORIOS = {
+ANO_MINIMO_PADRAO = 2024
+
+ARQUIVOS_BASE_PESQUISA = {
     "licitacao": "licitacao.csv",
     "item": "item.csv",
     "pessoas": "pessoas.csv",
 }
+
+ARQUIVOS_PRIORITARIOS = {
+    **ARQUIVOS_BASE_PESQUISA,
+    "item_prop": "item_prop.csv",
+    "proposta": "proposta.csv",
+    "licitante": "licitante.csv",
+}
+
+ARQUIVOS_DISPONIVEIS = {
+    **ARQUIVOS_PRIORITARIOS,
+    "comissao": "comissao.csv",
+    "documento_lic": "documento_lic.csv",
+    "dotacao_lic": "dotacao_lic.csv",
+    "evento_lic": "evento_lic.csv",
+    "lote": "lote.csv",
+    "lote_prop": "lote_prop.csv",
+    "membrocons": "membrocons.csv",
+    "memcomissao": "memcomissao.csv",
+}
+
+# Mantido para compatibilidade com importadores municipais existentes.
+ARQUIVOS_OBRIGATORIOS = ARQUIVOS_BASE_PESQUISA
 
 
 def quote_ident(nome):
@@ -58,6 +83,11 @@ def tabela_existe(con, tabela):
 def ano_base_da_pasta(pasta):
     encontrado = re.search(r"(20\d{2})", pasta.name)
     return encontrado.group(1) if encontrado else ""
+
+
+def ano_base_int_da_pasta(pasta):
+    ano = ano_base_da_pasta(pasta)
+    return int(ano) if ano else None
 
 
 def importar_csv(con, caminho_csv, tabela, ano_base, lote=20000):
@@ -123,33 +153,49 @@ def importar_csv(con, caminho_csv, tabela, ano_base, lote=20000):
 def criar_indices(con):
     print("Criando indices...")
 
-    indices = [
-        """
-        CREATE INDEX IF NOT EXISTS idx_licitacao_chave
-        ON licitacao (ANO_BASE, CD_ORGAO, NR_LICITACAO, ANO_LICITACAO, CD_TIPO_MODALIDADE)
-        """,
-        """
-        CREATE INDEX IF NOT EXISTS idx_item_chave
-        ON item (ANO_BASE, CD_ORGAO, NR_LICITACAO, ANO_LICITACAO, CD_TIPO_MODALIDADE)
-        """,
-        """
-        CREATE INDEX IF NOT EXISTS idx_item_descricao
-        ON item (DS_ITEM)
-        """,
-        """
-        CREATE INDEX IF NOT EXISTS idx_pessoas_documento
-        ON pessoas (ANO_BASE, CD_ORGAO, TP_DOCUMENTO, NR_DOCUMENTO)
-        """,
-    ]
+    indices_por_tabela = {
+        "licitacao": [
+            """
+            CREATE INDEX IF NOT EXISTS idx_licitacao_chave
+            ON licitacao (ANO_BASE, CD_ORGAO, NR_LICITACAO, ANO_LICITACAO, CD_TIPO_MODALIDADE)
+            """,
+        ],
+        "item": [
+            """
+            CREATE INDEX IF NOT EXISTS idx_item_chave
+            ON item (ANO_BASE, CD_ORGAO, NR_LICITACAO, ANO_LICITACAO, CD_TIPO_MODALIDADE)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_item_descricao
+            ON item (DS_ITEM)
+            """,
+        ],
+        "pessoas": [
+            """
+            CREATE INDEX IF NOT EXISTS idx_pessoas_documento
+            ON pessoas (ANO_BASE, CD_ORGAO, TP_DOCUMENTO, NR_DOCUMENTO)
+            """,
+        ],
+    }
 
-    for sql in indices:
-        con.execute(sql)
+    for tabela, indices in indices_por_tabela.items():
+        if tabela_existe(con, tabela):
+            for sql in indices:
+                con.execute(sql)
 
     con.commit()
 
 
 def criar_base_pesquisa(con):
     print("Criando tabela consolidada base_pesquisa...")
+
+    faltantes = [tabela for tabela in ARQUIVOS_BASE_PESQUISA if not tabela_existe(con, tabela)]
+    if faltantes:
+        lista = ", ".join(faltantes)
+        raise RuntimeError(
+            "Nao e possivel criar base_pesquisa sem as tabelas base: "
+            f"{lista}. Inclua --tabelas base ou prioritarias."
+        )
 
     con.execute("DROP TABLE IF EXISTS base_pesquisa")
 
@@ -232,16 +278,62 @@ def criar_base_pesquisa(con):
     print(f"base_pesquisa criada com {total:,} linhas".replace(",", "."))
 
 
-def validar_arquivos(pasta):
+def validar_arquivos(pasta, tabelas=None):
+    tabelas = tabelas or ARQUIVOS_OBRIGATORIOS
     faltantes = [
         nome_arquivo
-        for nome_arquivo in ARQUIVOS_OBRIGATORIOS.values()
+        for nome_arquivo in tabelas.values()
         if not (pasta / nome_arquivo).exists()
     ]
 
     if faltantes:
         lista = ", ".join(faltantes)
         raise FileNotFoundError(f"Arquivos obrigatorios nao encontrados: {lista}")
+
+
+def tabelas_por_argumento(valor):
+    valor = (valor or "prioritarias").strip().lower()
+    if valor in {"prioritarias", "prioritaria", "padrao", "default"}:
+        return ARQUIVOS_PRIORITARIOS
+    if valor in {"base", "minima", "minimo"}:
+        return ARQUIVOS_BASE_PESQUISA
+    if valor == "todas":
+        return ARQUIVOS_DISPONIVEIS
+
+    tabelas = {}
+    for nome in [parte.strip() for parte in valor.split(",") if parte.strip()]:
+        if nome not in ARQUIVOS_DISPONIVEIS:
+            disponiveis = ", ".join(sorted(ARQUIVOS_DISPONIVEIS))
+            raise ValueError(f"Tabela RAW desconhecida: {nome}. Disponiveis: {disponiveis}")
+        tabelas[nome] = ARQUIVOS_DISPONIVEIS[nome]
+    if not tabelas:
+        raise ValueError("Informe ao menos uma tabela para importar.")
+    return tabelas
+
+
+def resolver_pastas_ano(caminhos, ano_minimo=ANO_MINIMO_PADRAO, anos=None):
+    anos_permitidos = {int(ano) for ano in anos} if anos else None
+    pastas = []
+
+    for caminho in [Path(p) for p in caminhos]:
+        if (caminho / "item.csv").exists():
+            candidatas = [caminho]
+        else:
+            candidatas = sorted(p for p in caminho.iterdir() if p.is_dir())
+
+        for pasta in candidatas:
+            ano = ano_base_int_da_pasta(pasta)
+            if ano is None:
+                continue
+            if ano < ano_minimo:
+                continue
+            if anos_permitidos and ano not in anos_permitidos:
+                continue
+            pastas.append(pasta)
+
+    if not pastas:
+        raise FileNotFoundError("Nenhuma pasta LicitaCon encontrada para os filtros informados.")
+    return pastas
 
 
 def main():
@@ -251,13 +343,38 @@ def main():
     parser.add_argument(
         "--pasta",
         nargs="+",
-        default=["bases_dados/licitacon_anos/2025.csv"],
-        help="Uma ou mais pastas onde estao licitacao.csv, item.csv e pessoas.csv.",
+        default=["bases_dados/licitacon_anos"],
+        help="Pasta raiz dos anos ou uma ou mais pastas anuais do LicitaCon.",
     )
     parser.add_argument(
         "--saida",
-        default="licitacon.sqlite",
+        default=path_str(DEFAULT_RAW_DB_PATH),
         help="Arquivo SQLite que sera criado/atualizado.",
+    )
+    parser.add_argument(
+        "--ano-minimo",
+        type=int,
+        default=ANO_MINIMO_PADRAO,
+        help="Menor ano-base permitido no RAW.",
+    )
+    parser.add_argument(
+        "--anos",
+        nargs="*",
+        type=int,
+        help="Lista opcional de anos especificos para importar.",
+    )
+    parser.add_argument(
+        "--tabelas",
+        default="prioritarias",
+        help=(
+            "Conjunto de tabelas: prioritarias, base, todas ou lista separada por virgula. "
+            "Padrao: prioritarias."
+        ),
+    )
+    parser.add_argument(
+        "--incremental",
+        action="store_true",
+        help="Atualiza somente os anos selecionados sem apagar os demais anos do RAW.",
     )
     parser.add_argument(
         "--lote",
@@ -268,11 +385,14 @@ def main():
 
     args = parser.parse_args()
 
-    pastas = [Path(p) for p in args.pasta]
+    garantir_diretorios_database()
+    tabelas_importacao = tabelas_por_argumento(args.tabelas)
+    pastas = resolver_pastas_ano(args.pasta, ano_minimo=args.ano_minimo, anos=args.anos)
     saida = Path(args.saida)
+    saida.parent.mkdir(parents=True, exist_ok=True)
 
     for pasta in pastas:
-        validar_arquivos(pasta)
+        validar_arquivos(pasta, tabelas=tabelas_importacao)
 
     inicio = time.time()
     con = sqlite3.connect(saida)
@@ -280,10 +400,19 @@ def main():
     try:
         configurar_conexao(con)
 
-        for tabela in ARQUIVOS_OBRIGATORIOS:
-            con.execute(f"DROP TABLE IF EXISTS {quote_ident(tabela)}")
-
-        con.execute("DROP TABLE IF EXISTS base_pesquisa")
+        anos_importados = [ano_base_da_pasta(pasta) for pasta in pastas]
+        if args.incremental:
+            for tabela in tabelas_importacao:
+                if tabela_existe(con, tabela):
+                    con.executemany(
+                        f"DELETE FROM {quote_ident(tabela)} WHERE ANO_BASE = ?",
+                        [(ano,) for ano in anos_importados],
+                    )
+            con.execute("DROP TABLE IF EXISTS base_pesquisa")
+        else:
+            for tabela in ARQUIVOS_DISPONIVEIS:
+                con.execute(f"DROP TABLE IF EXISTS {quote_ident(tabela)}")
+            con.execute("DROP TABLE IF EXISTS base_pesquisa")
         con.commit()
 
         for pasta in pastas:
@@ -292,7 +421,7 @@ def main():
             if not ano_base:
                 raise ValueError(f"Nao foi possivel identificar o ano na pasta: {pasta}")
 
-            for tabela, nome_arquivo in ARQUIVOS_OBRIGATORIOS.items():
+            for tabela, nome_arquivo in tabelas_importacao.items():
                 importar_csv(con, pasta / nome_arquivo, tabela, ano_base, lote=args.lote)
 
         criar_indices(con)

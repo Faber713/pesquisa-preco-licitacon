@@ -4,6 +4,7 @@ import sqlite3
 import time
 from pathlib import Path
 
+from database.paths import DEFAULT_OPERATIONAL_DB_PATH, DEFAULT_RAW_DB_PATH, path_str
 from utils.util import normalizar
 
 
@@ -267,8 +268,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Cria banco operacional enxuto para busca inteligente LicitaCon."
     )
-    parser.add_argument("--origem", default="licitacon.sqlite")
-    parser.add_argument("--saida", default="database/operational/licitacon_search.sqlite")
+    parser.add_argument("--origem", default=path_str(DEFAULT_RAW_DB_PATH))
+    parser.add_argument("--saida", default=path_str(DEFAULT_OPERATIONAL_DB_PATH))
     parser.add_argument("--sem-regional", action="store_true")
     parser.add_argument("--benchmark", action="store_true")
     args = parser.parse_args()

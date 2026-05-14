@@ -5,6 +5,7 @@ import sqlite3
 import time
 from pathlib import Path
 
+from database.paths import DEFAULT_RAW_DB_PATH, garantir_diretorios_database, path_str
 from database.raw.importar_licitacon import (
     ARQUIVOS_OBRIGATORIOS,
     colunas_unicas,
@@ -255,6 +256,7 @@ def criar_base_historica_municipios(con):
 
 
 def importar_pastas(args):
+    garantir_diretorios_database()
     raiz = Path(args.pasta)
     pastas = sorted(p for p in raiz.iterdir() if p.is_dir())
 
@@ -264,7 +266,9 @@ def importar_pastas(args):
     for pasta in pastas:
         validar_arquivos(pasta)
 
-    con = sqlite3.connect(args.saida)
+    saida = Path(args.saida)
+    saida.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(saida)
     inicio = time.time()
 
     try:
@@ -313,7 +317,7 @@ def importar_pastas(args):
 
     duracao = time.time() - inicio
     print(f"Importacao municipal finalizada em {duracao:.1f}s")
-    print(f"Base atualizada em: {Path(args.saida).resolve()}")
+    print(f"Base atualizada em: {saida.resolve()}")
 
 
 def main():
@@ -327,7 +331,7 @@ def main():
     )
     parser.add_argument(
         "--saida",
-        default="licitacon.sqlite",
+        default=path_str(DEFAULT_RAW_DB_PATH),
         help="Arquivo SQLite que sera atualizado.",
     )
     parser.add_argument(

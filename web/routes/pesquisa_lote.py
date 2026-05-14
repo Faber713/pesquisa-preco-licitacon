@@ -3,6 +3,9 @@ import time
 
 from flask import Blueprint, current_app, render_template, request
 
+from auth.decorators import login_required
+from auth.session_manager import usuario_atual
+from storage.app_storage import registrar_auditoria, salvar_pesquisa_usuario
 from utils.util import converter_numero
 from web.services.filtros_service import (
     filtrar_orgao_origem,
@@ -181,6 +184,7 @@ def parse_planilha_lote(form):
 
 @pesquisa_lote_bp.route("", methods=["GET", "POST"])
 @pesquisa_lote_bp.route("/", methods=["GET", "POST"])
+@login_required
 def pesquisa_lote():
     exemplo = (
         "rele falta fase 380v | 1 | 20\n"
@@ -218,6 +222,7 @@ def pesquisa_lote():
     data_inicial_txt = request.form.get("data_inicial", "").strip()
     data_final_txt = request.form.get("data_final", "").strip()
     quantidade_resultados = _limite_resultados(request.form.get("quantidade_resultados", RESULTADOS_PADRAO))
+    fontes = request.form.getlist("fontes") or ["licitacon"]
     contexto["desconsiderar_orgao_origem"] = "1" if desconsiderar_orgao_origem else ""
     contexto["orgao_origem"] = orgao_origem
     contexto["periodo_pesquisa"] = periodo_pesquisa
@@ -248,6 +253,7 @@ def pesquisa_lote():
                 search_db_mode=current_app.config["SEARCH_DB_MODE"],
                 raw_path=current_app.config["LICITACON_SQLITE_PATH"],
                 operational_path=current_app.config["SEARCH_DB_PATH"],
+                fontes=fontes,
             )
             data_inicial, data_final = periodo_para_datas(periodo_pesquisa, data_inicial_txt, data_final_txt)
             resultados, removidos_periodo = filtrar_periodo_resultados(resultados, data_inicial, data_final)
@@ -297,4 +303,22 @@ def pesquisa_lote():
         "erros": len(erros) + (len(resultados_lote) - sucesso),
         "tempo_total_ms": total_ms,
     }
+    usuario = usuario_atual()
+    if usuario:
+        pesquisa_id = salvar_pesquisa_usuario(
+            usuario.get("id"),
+            "Pesquisa em lote",
+            fontes,
+            "lote",
+            {"resumo": contexto["resumo"], "resultados_lote": resultados_lote},
+        )
+        registrar_auditoria(
+            usuario.get("id"),
+            "pesquisa_lote",
+            "pesquisas",
+            pesquisa_id,
+            {"itens": len(itens), "fontes": fontes},
+            request.remote_addr,
+        )
+        contexto["pesquisa_id"] = pesquisa_id
     return render_template("pesquisa_lote.html", **contexto)

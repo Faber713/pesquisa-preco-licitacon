@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from database.paths import DEFAULT_OPERATIONAL_DB_PATH, DEFAULT_RAW_DB_PATH, path_str
 from utils.util import normalizar, palavras_fortes
 
 
@@ -605,8 +606,8 @@ def carregar_candidatos_runtime(
     criterios,
     limite=15000,
     mode="auto",
-    raw_path="licitacon.sqlite",
-    operational_path="database/operational/licitacon_search.sqlite",
+    raw_path=path_str(DEFAULT_RAW_DB_PATH),
+    operational_path=path_str(DEFAULT_OPERATIONAL_DB_PATH),
     tabela="base_pesquisa",
     excluir_municipio=MUNICIPIO_PROPRIO_PADRAO,
     ordenar_por_relevancia=False,

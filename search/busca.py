@@ -1,4 +1,4 @@
-from utils.config import (
+from config.app_settings import (
     LIMIAR_RIGIDO,
     LIMIAR_RELAXADO,
     LIMIAR_AMPLO,

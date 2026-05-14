@@ -3,6 +3,8 @@ import re
 import unicodedata
 from datetime import date, datetime, timedelta
 
+from search.models import item_valido
+
 
 def normalizar_orgao(texto):
     texto = unicodedata.normalize("NFKD", str(texto or ""))
@@ -114,6 +116,8 @@ def filtrar_periodo_resultados(resultados, data_inicial, data_final):
 def preparar_resultados(resultados, item_uid):
     preparados = []
     for resultado in resultados:
+        if not item_valido(resultado):
+            continue
         copia = dict(resultado)
         copia["resultado_uid"] = copia.get("resultado_uid") or gerar_resultado_uid(copia, item_uid)
         preparados.append(copia)

@@ -1,5 +1,8 @@
 from flask import Blueprint, current_app, render_template, request
 
+from auth.decorators import login_required
+from auth.session_manager import usuario_atual
+from storage.app_storage import registrar_auditoria, salvar_pesquisa_usuario
 from utils.util import converter_numero
 from web.services.filtros_service import (
     filtrar_orgao_origem,
@@ -15,6 +18,7 @@ pesquisa_bp = Blueprint("pesquisa", __name__, url_prefix="/pesquisa")
 
 
 def _executar_pesquisa_sqlite(descricao, qtd_min, qtd_max):
+    fontes = request.form.getlist("fontes") or ["licitacon"]
     return executar_pesquisa_item(
         descricao,
         qtd_min,
@@ -23,10 +27,12 @@ def _executar_pesquisa_sqlite(descricao, qtd_min, qtd_max):
         search_db_mode=current_app.config["SEARCH_DB_MODE"],
         raw_path=current_app.config["LICITACON_SQLITE_PATH"],
         operational_path=current_app.config["SEARCH_DB_PATH"],
+        fontes=fontes,
     )
 
 
 @pesquisa_bp.route("/", methods=["GET", "POST"])
+@login_required
 def pesquisa():
     contexto = {
         "app_name": current_app.config["APP_NAME"],
@@ -41,6 +47,7 @@ def pesquisa():
             "data_inicial": "",
             "data_final": "",
             "resultados_max": "50",
+            "fontes": ["licitacon"],
         },
         "item_uid": "",
         "criterios": None,
@@ -61,6 +68,7 @@ def pesquisa():
     data_inicial_txt = request.form.get("data_inicial", "").strip()
     data_final_txt = request.form.get("data_final", "").strip()
     resultados_max_txt = request.form.get("resultados_max", "50").strip()
+    fontes = request.form.getlist("fontes") or ["licitacon"]
     contexto["form"] = {
         "descricao": descricao,
         "qtd_min": qtd_min_txt,
@@ -71,6 +79,7 @@ def pesquisa():
         "data_inicial": data_inicial_txt,
         "data_final": data_final_txt,
         "resultados_max": resultados_max_txt,
+        "fontes": fontes,
     }
 
     qtd_min = converter_numero(qtd_min_txt)
@@ -116,4 +125,26 @@ def pesquisa():
     contexto["item_uid"] = item_uid
     contexto["resultados"] = resultados[:resultados_max]
     contexto["estatisticas"] = estatisticas
+    usuario = usuario_atual()
+    if usuario:
+        pesquisa_id = salvar_pesquisa_usuario(
+            usuario.get("id"),
+            descricao,
+            fontes,
+            "auto",
+            {
+                "criterios": criterios,
+                "estatisticas": estatisticas,
+                "resultados": resultados[:resultados_max],
+            },
+        )
+        registrar_auditoria(
+            usuario.get("id"),
+            "pesquisa",
+            "pesquisas",
+            pesquisa_id,
+            {"descricao": descricao, "fontes": fontes},
+            request.remote_addr,
+        )
+        contexto["pesquisa_id"] = pesquisa_id
     return render_template("pesquisa.html", **contexto)

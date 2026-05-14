@@ -1,7 +1,0 @@
-pandas
-rapidfuzz
-openai
-requests
-streamlit
-openpyxl
-flask

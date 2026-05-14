@@ -1,6 +1,6 @@
 from rapidfuzz import fuzz
 
-from utils.config import (
+from config.app_settings import (
     PESO_TEXTO,
     PESO_OBRIGATORIOS,
     PESO_IMPORTANTES,

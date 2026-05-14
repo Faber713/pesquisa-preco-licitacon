@@ -2,6 +2,6 @@ pandas
 rapidfuzz
 openai
 requests
-streamlit
 openpyxl
 flask
+gunicorn; platform_system != "Windows"
