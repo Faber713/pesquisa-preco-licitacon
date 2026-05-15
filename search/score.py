@@ -1,4 +1,5 @@
 from rapidfuzz import fuzz
+import logging
 
 from config.app_settings import (
     PESO_TEXTO,
@@ -15,11 +16,17 @@ from utils.util import (
     termos_compativeis,
     palavras_fortes
 )
+from search.technical import calcular_penalidades_tecnicas, texto_sem_stopwords_tecnicas
+
+
+logger = logging.getLogger(__name__)
 
 
 def calcular_score(descricao_busca, descricao_base, criterios, modo="rigido"):
     busca_norm = normalizar(descricao_busca)
     base_norm = normalizar(descricao_base)
+    busca_score_norm = texto_sem_stopwords_tecnicas(descricao_busca)
+    base_score_norm = texto_sem_stopwords_tecnicas(descricao_base)
 
     obrigatorios = lista_normalizada(criterios.get("termos_obrigatorios", []))
     importantes = lista_normalizada(criterios.get("termos_importantes", []))
@@ -54,9 +61,9 @@ def calcular_score(descricao_busca, descricao_base, criterios, modo="rigido"):
     pct_importantes = len(encontrados_importantes) / len(importantes) if importantes else 0
     pct_frases = len(encontradas_frases) / len(frases_chave) if frases_chave else 0
 
-    score_token_set = fuzz.token_set_ratio(busca_norm, base_norm)
-    score_token_sort = fuzz.token_sort_ratio(busca_norm, base_norm)
-    score_partial = fuzz.partial_ratio(busca_norm, base_norm)
+    score_token_set = fuzz.token_set_ratio(busca_score_norm, base_score_norm)
+    score_token_sort = fuzz.token_sort_ratio(busca_score_norm, base_score_norm)
+    score_partial = fuzz.partial_ratio(busca_score_norm, base_score_norm)
 
     score_texto = (
         score_token_set * 0.50 +
@@ -118,6 +125,17 @@ def calcular_score(descricao_busca, descricao_base, criterios, modo="rigido"):
         if encontradas_frases:
             score += min(15, len(encontradas_frases) * 5)
 
+    penalidade_tecnica = calcular_penalidades_tecnicas(descricao_busca, descricao_base)
+    if penalidade_tecnica["penalidade"]:
+        score -= penalidade_tecnica["penalidade"]
+        logger.debug(
+            "[score] descricao_busca=%r descricao_resultado=%r penalidade_tecnica=%s avisos=%s",
+            descricao_busca,
+            descricao_base,
+            penalidade_tecnica["penalidade"],
+            penalidade_tecnica["avisos"],
+        )
+
     score = max(0, min(100, score))
 
     return {
@@ -128,5 +146,9 @@ def calcular_score(descricao_busca, descricao_base, criterios, modo="rigido"):
         "obrigatorios_faltantes": faltantes_obrigatorios,
         "termos_exclusao": encontrados_excluir,
         "frases_chave_encontradas": encontradas_frases,
-        "score_texto": round(score_texto, 2)
+        "score_texto": round(score_texto, 2),
+        "penalidade_tecnica": penalidade_tecnica["penalidade"],
+        "avisos_tecnicos_score": penalidade_tecnica["avisos"],
+        "atributos_busca": penalidade_tecnica["busca"],
+        "atributos_resultado": penalidade_tecnica["resultado"],
     }

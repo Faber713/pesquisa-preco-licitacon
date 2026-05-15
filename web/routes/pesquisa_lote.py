@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 
 from flask import Blueprint, current_app, render_template, request
@@ -7,6 +8,7 @@ from auth.decorators import login_required
 from auth.session_manager import usuario_atual
 from storage.app_storage import registrar_auditoria, salvar_pesquisa_usuario
 from utils.util import converter_numero
+from search.technical import extrair_nucleo_semantico
 from web.services.filtros_service import (
     filtrar_orgao_origem,
     filtrar_periodo_resultados,
@@ -19,7 +21,7 @@ from web.services.pesquisa_service import executar_pesquisa_item
 
 logger = logging.getLogger(__name__)
 pesquisa_lote_bp = Blueprint("pesquisa_lote", __name__, url_prefix="/pesquisa-lote")
-MAX_ITENS_LOTE = 100
+MAX_ITENS_LOTE = int(os.getenv("MAX_ITENS_LOTE", "500"))
 TOLERANCIA_PADRAO = 20
 RESULTADOS_PADRAO = 8
 MAX_RESULTADOS_POR_ITEM = 50
@@ -84,7 +86,7 @@ def parse_linhas_lote(texto):
             erros.append({
                 "linha": item["linha"],
                 "texto": item["descricao"],
-                "erro": f"Limite inicial de {MAX_ITENS_LOTE} itens por lote.",
+                "erro": f"Limite operacional de {MAX_ITENS_LOTE} itens por lote.",
             })
         itens = itens[:MAX_ITENS_LOTE]
 
@@ -167,7 +169,7 @@ def parse_planilha_lote(form):
             erros.append({
                 "linha": item["linha"],
                 "texto": item["descricao"],
-                "erro": f"Limite inicial de {MAX_ITENS_LOTE} itens por lote.",
+                "erro": f"Limite operacional de {MAX_ITENS_LOTE} itens por lote.",
             })
         itens = itens[:MAX_ITENS_LOTE]
 
@@ -210,6 +212,7 @@ def pesquisa_lote():
         "resultados_lote": [],
         "erros": [],
         "resumo": None,
+        "max_itens_lote": MAX_ITENS_LOTE,
     }
 
     if request.method == "GET":
@@ -238,6 +241,19 @@ def pesquisa_lote():
         contexto["tolerancia_percentual"] = _fmt_numero(tolerancia)
         contexto["linhas_planilha"] = linhas_form
     contexto["erros"] = erros
+
+    grupos_semanticos = {}
+    for item in itens:
+        nucleo = extrair_nucleo_semantico(item["descricao"])
+        grupo = nucleo.get("grupo_semantico") or "sem_core"
+        grupos_semanticos.setdefault(grupo, []).append(item)
+    for grupo, itens_grupo in grupos_semanticos.items():
+        if len(itens_grupo) > 1:
+            logger.info(
+                "[lote_semantico] grupo=%r itens_relacionados=%s cache_compartilhado=True",
+                grupo,
+                len(itens_grupo),
+            )
 
     inicio_lote = time.perf_counter()
     resultados_lote = []

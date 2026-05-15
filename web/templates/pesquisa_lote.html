@@ -6,7 +6,7 @@
   <section class="panel batch-panel">
     <div class="panel-header">
       <div>
-        <p class="eyebrow">Cesta de compras · até 100 itens</p>
+        <p class="eyebrow">Cesta de compras · até {{ max_itens_lote }} itens</p>
         <h2>Mini planilha de itens</h2>
       </div>
       {% if resumo %}
@@ -79,7 +79,7 @@
         </label>
       </div>
 
-      <div class="sheet-status" id="sheet-status" data-operational-limit="100"></div>
+      <div class="sheet-status" id="sheet-status" data-operational-limit="{{ max_itens_lote }}"></div>
 
       <div class="batch-progress" id="batch-progress" aria-live="polite">
         <div class="progress-track">

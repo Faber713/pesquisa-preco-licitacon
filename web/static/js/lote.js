@@ -40,7 +40,7 @@
       return;
     }
     if (total > operationalLimit) {
-      status.textContent = `${total} itens detectados. O lote processara os primeiros ${operationalLimit} itens nesta versao.`;
+      status.textContent = `${total} itens detectados. Limite operacional atual: ${operationalLimit} itens.`;
       status.classList.add("is-warning");
     } else if (total > 0) {
       status.textContent = `${total} item(ns) detectado(s).`;
@@ -180,7 +180,7 @@
 
   function startProgress() {
     const totalDetected = filledRows().length;
-    const totalProcessed = Math.min(totalDetected || 1, operationalLimit);
+    const totalProcessed = totalDetected || 1;
     let percent = 4;
     const startedAt = Date.now();
 

@@ -1,6 +1,7 @@
 import re
 import sqlite3
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 import logging
 from pathlib import Path
@@ -9,6 +10,19 @@ import pandas as pd
 
 from database.paths import DEFAULT_OPERATIONAL_DB_PATH, DEFAULT_RAW_DB_PATH, path_str
 from utils.util import normalizar, palavras_fortes
+from search.technical import (
+    ATRIBUTOS_FRACOS,
+    STOPWORDS_TECNICAS,
+    aplicar_sinonimos_tecnicos,
+    consulta_generica,
+    detectar_categoria_semantica,
+    expandir_termos_sinonimos,
+    extrair_nucleo_semantico,
+    obter_category_profile,
+    remover_atributos_fracos_tokens,
+    parse_atributos_tecnicos,
+    tokens_busca_tecnica,
+)
 
 
 MUNICIPIO_PROPRIO_PADRAO = "Joia"
@@ -16,6 +30,8 @@ FTS_BASE_PESQUISA = "base_pesquisa_fts"
 TABELA_OPERACIONAL = "base_pesquisa_operacional"
 FTS_OPERACIONAL = "base_pesquisa_operacional_fts"
 logger = logging.getLogger(__name__)
+_CANDIDATOS_CORE_CACHE = OrderedDict()
+_CANDIDATOS_CORE_CACHE_MAX = 128
 
 
 @dataclass(frozen=True)
@@ -140,6 +156,7 @@ def tabela_sqlite_existe(caminho_sqlite, nome_tabela):
 
 
 def montar_termos_sqlite(descricao_busca, criterios):
+    analise_tecnica = parse_atributos_tecnicos(descricao_busca)
     textos = [
         descricao_busca,
         criterios.get("descricao_sugerida_licitacon", ""),
@@ -149,34 +166,138 @@ def montar_termos_sqlite(descricao_busca, criterios):
     ]
 
     termos = []
+    termos.extend(tokens_busca_tecnica(descricao_busca))
+    termos.extend(analise_tecnica["termos_principais"])
 
     for texto in textos:
         termos.extend(palavras_fortes(texto))
         termos.extend(
             p.lower()
-            for p in re.findall(r"\w{4,}", str(texto), flags=re.UNICODE)
+            for p in re.findall(r"[a-zA-Z]+|\d+(?:[,.]\d+)?[a-zA-Z]*", str(texto), flags=re.UNICODE)
         )
 
+    termos = expandir_termos_sinonimos(termos)
     termos = [
-        termo for termo in dict.fromkeys(termos)
-        if termo not in {"110", "220", "380", "volts", "bivolt", "horas"}
+        normalizar(termo) for termo in dict.fromkeys(termos)
+        if normalizar(termo)
+        and normalizar(termo) not in STOPWORDS_TECNICAS
+        and normalizar(termo) not in ATRIBUTOS_FRACOS
+        and normalizar(termo) not in {"volts", "horas"}
     ]
 
-    return termos[:10]
+    return list(dict.fromkeys(termos))[:14]
 
 
 def montar_match_fts(termos):
     termos_limpos = []
     for termo in termos:
         termo_norm = normalizar(termo)
-        partes = re.findall(r"[a-z0-9_]{2,}", termo_norm)
-        termos_limpos.extend(partes)
+        partes = re.findall(r"[a-z0-9_]+", termo_norm)
+        termos_limpos.extend(
+            parte
+            for parte in partes
+            if parte.isdigit() or len(parte) >= 2
+        )
 
-    termos_unicos = list(dict.fromkeys(termos_limpos))[:8]
+    termos_unicos = list(dict.fromkeys(termos_limpos))[:10]
     if not termos_unicos:
         return ""
 
     return " OR ".join(f'"{termo}"*' for termo in termos_unicos)
+
+
+def montar_matches_fts(descricao_busca, criterios):
+    analise = parse_atributos_tecnicos(descricao_busca)
+    termos = montar_termos_sqlite(descricao_busca, criterios)
+    principais = remover_atributos_fracos_tokens(
+        expandir_termos_sinonimos(analise["termos_principais"]),
+        contexto="fts_principais",
+    )
+    atributos = [
+        atributo.get("bruto") or atributo.get("valor")
+        for atributo in analise["atributos_criticos"].values()
+        if atributo.get("bruto") or atributo.get("valor")
+    ]
+    atributos = remover_atributos_fracos_tokens(
+        expandir_termos_sinonimos(atributos),
+        contexto="fts_atributos",
+    )
+    nucleo = extrair_nucleo_semantico(descricao_busca)
+    fallback_semantico = remover_atributos_fracos_tokens(
+        expandir_termos_sinonimos((nucleo.get("search_core") or "").split()),
+        contexto="semantic_fallback",
+    )
+
+    consulta_e_generica = consulta_generica(descricao_busca)
+    tentativas = [
+        ("and_principal_atributos", principais + atributos),
+        ("and_principais", principais),
+    ]
+    if not consulta_e_generica:
+        tentativas.extend([
+            ("principal_atributos", principais + atributos),
+            ("tecnica_completa", termos),
+            ("principais", principais),
+            ("fortes", termos[:8]),
+        ])
+    else:
+        tentativas.append(("principal_atributos_restrito", principais + atributos))
+    if fallback_semantico:
+        tentativas.append(("semantic_fallback", fallback_semantico))
+
+    matches = []
+    vistos = set()
+    for nome, termos_tentativa in tentativas:
+        if nome.startswith("and_"):
+            partes = []
+            for termo in termos_tentativa:
+                termo_norm = normalizar(termo)
+                pedacos = [
+                    parte
+                    for parte in re.findall(r"[a-z0-9_]+", termo_norm)
+                    if (parte.isdigit() or len(parte) >= 2)
+                    and parte not in STOPWORDS_TECNICAS
+                    and parte not in ATRIBUTOS_FRACOS
+                ]
+                partes.extend(pedacos)
+            termos_unicos = list(dict.fromkeys(partes))[:5]
+            match = " AND ".join(f'"{termo}"*' for termo in termos_unicos)
+        else:
+            match = montar_match_fts(termos_tentativa)
+        if match and match not in vistos:
+            matches.append((nome, match))
+            vistos.add(match)
+
+    return matches
+
+
+def _strict_first_deve_parar(nome_estrategia, quantidade, limite, descricao_busca):
+    if quantidade <= 0:
+        return False
+    if nome_estrategia.startswith("and_") and quantidade >= min(limite, 80):
+        return True
+    if consulta_generica(descricao_busca) and quantidade >= min(limite, 120):
+        return True
+    return False
+
+
+def _strict_zero_deve_abortar(nome_estrategia, quantidade, descricao_busca):
+    if quantidade > 0 or not nome_estrategia.startswith("and_"):
+        return False
+    categoria = detectar_categoria_semantica(descricao_busca)
+    profile = obter_category_profile(categoria)
+    if profile.get("rigidez") != "alta":
+        logger.info(
+            "[expansao_soft_penalty] categoria=%s motivo=strict_zero_fts acao=continuar_expansao",
+            categoria,
+        )
+        return False
+    analise = parse_atributos_tecnicos(descricao_busca)
+    termos = analise.get("termos_principais", [])
+    atributos = analise.get("atributos_criticos", {})
+    if atributos:
+        return False
+    return len(termos) >= 5 and any(len(termo) >= 8 or any(ch.isdigit() for ch in termo) for termo in termos)
 
 
 def _filtro_exclusao_municipio(tabela, excluir_municipio):
@@ -231,6 +352,67 @@ def _registrar_resultado_busca(
         candidatos,
         tempo_ms,
         detalhe,
+    )
+    return df
+
+
+def _cache_key_candidatos(banco, caminho, descricao_busca, limite, excluir_municipio):
+    nucleo = extrair_nucleo_semantico(str(descricao_busca or ""))
+    core = nucleo.get("semantic_core")
+    if not core or not nucleo.get("tem_variantes"):
+        return None, nucleo
+    return (
+        banco,
+        str(Path(caminho)),
+        core,
+        int(limite),
+        normalizar(excluir_municipio or ""),
+    ), nucleo
+
+
+def _obter_cache_candidatos(chave, core):
+    if not chave or chave not in _CANDIDATOS_CORE_CACHE:
+        return None
+    df = _CANDIDATOS_CORE_CACHE.pop(chave)
+    _CANDIDATOS_CORE_CACHE[chave] = df
+    reutilizado = df.copy(deep=False)
+    reutilizado.attrs["sqlite_search"] = dict(df.attrs.get("sqlite_search", {}))
+    reutilizado.attrs["sqlite_search"].update({
+        "cache_core": True,
+        "fts_reutilizado": True,
+        "semantic_core": core,
+    })
+    logger.info(
+        "[reuse_candidates] core=%r fts_reutilizado=True candidatos=%s",
+        core,
+        len(reutilizado),
+    )
+    logger.info(
+        "[cache_core] reutilizado core=%r candidatos=%s",
+        core,
+        len(reutilizado),
+    )
+    return reutilizado
+
+
+def _salvar_cache_candidatos(chave, df, core):
+    if not chave or df is None:
+        return df
+    armazenado = df.copy(deep=False)
+    armazenado.attrs["sqlite_search"] = dict(df.attrs.get("sqlite_search", {}))
+    armazenado.attrs["sqlite_search"].update({
+        "cache_core": True,
+        "fts_reutilizado": False,
+        "semantic_core": core,
+    })
+    _CANDIDATOS_CORE_CACHE[chave] = armazenado
+    while len(_CANDIDATOS_CORE_CACHE) > _CANDIDATOS_CORE_CACHE_MAX:
+        _CANDIDATOS_CORE_CACHE.popitem(last=False)
+    df.attrs["sqlite_search"] = dict(armazenado.attrs["sqlite_search"])
+    logger.info(
+        "[cache_core] salvo core=%r candidatos=%s",
+        core,
+        len(df),
     )
     return df
 
@@ -342,16 +524,15 @@ def carregar_candidatos_fts_base_pesquisa(
     if not indice_fts_base_pesquisa_existe(caminho_sqlite):
         return None
 
-    termos = montar_termos_sqlite(descricao_busca, criterios)
-    match = montar_match_fts(termos)
-    if not match:
+    matches = montar_matches_fts(descricao_busca, criterios)
+    if not matches:
         return None
 
     filtro_municipio, parametros_excluir = _filtro_exclusao_municipio(
         "base_pesquisa",
         excluir_municipio,
     )
-    pre_limite = max(limite * 8, limite)
+    pre_limite = max(limite, min(limite * 2, 1200))
 
     sql = f"""
         WITH fts_hits AS (
@@ -398,16 +579,57 @@ def carregar_candidatos_fts_base_pesquisa(
         LIMIT ?
     """
 
-    parametros = [match, pre_limite] + parametros_excluir + [limite]
+    frames = []
+    matches_executados = []
     with conectar_licitacon(caminho_sqlite) as con:
-        df = pd.read_sql_query(sql, con, params=parametros, dtype=str)
+        for nome_estrategia, match in matches:
+            matches_executados.append((nome_estrategia, match))
+            parametros = [match, pre_limite] + parametros_excluir + [limite]
+            inicio_tentativa = time.perf_counter()
+            df_tentativa = pd.read_sql_query(sql, con, params=parametros, dtype=str)
+            df_tentativa["_fts_strategy"] = nome_estrategia
+            frames.append(df_tentativa)
+            logger.info(
+                "FTS5 tentativa=%s match=%s candidatos=%s tempo_ms=%s",
+                nome_estrategia,
+                match,
+                len(df_tentativa),
+                round((time.perf_counter() - inicio_tentativa) * 1000, 2),
+            )
+            if _strict_zero_deve_abortar(nome_estrategia, len(df_tentativa), descricao_busca):
+                logger.info(
+                    "[expansao_hard_abort] origem=fts5 tentativa=%s motivo_aborto=baixa_aderencia match=%s",
+                    nome_estrategia,
+                    match,
+                )
+                continue
+            if nome_estrategia.startswith("and_") and len(df_tentativa) == 0:
+                logger.info(
+                    "[semantic_fallback] tentativa=%s candidatos=0 acao=continuar_sem_atributos_fracos match=%s",
+                    nome_estrategia,
+                    match,
+                )
+            if _strict_first_deve_parar(nome_estrategia, len(df_tentativa), limite, descricao_busca):
+                logger.info(
+                    "FTS5 strict_first_stop tentativa=%s candidatos=%s limite=%s",
+                    nome_estrategia,
+                    len(df_tentativa),
+                    limite,
+                )
+                break
+            if len(pd.concat(frames, ignore_index=True).drop_duplicates(subset=["Linha CSV", "Item", "Orgao"])) >= limite:
+                break
+
+    df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if not df.empty:
+        df = df.drop_duplicates(subset=["Linha CSV", "Item", "Orgao"]).head(limite)
 
     return _registrar_resultado_busca(
         df,
-        "fts5",
+        "fts5_multi",
         inicio,
         len(df),
-        detalhe=f"match={match}",
+        detalhe="; ".join(f"{nome}={match}" for nome, match in matches_executados),
         banco="raw",
         caminho=caminho_sqlite,
     )
@@ -529,15 +751,14 @@ def carregar_candidatos_operacional(
     if not indice_fts_operacional_existe(caminho_sqlite):
         return None
 
-    termos = montar_termos_sqlite(descricao_busca, criterios)
-    match = montar_match_fts(termos)
-    if not match:
+    matches = montar_matches_fts(descricao_busca, criterios)
+    if not matches:
         return None
 
     filtro_municipio, parametros_excluir = _filtro_exclusao_operacional(
         excluir_municipio,
     )
-    pre_limite = max(limite * 8, limite)
+    pre_limite = max(limite, min(limite * 2, 1200))
 
     sql = f"""
         WITH fts_hits AS (
@@ -586,16 +807,57 @@ def carregar_candidatos_operacional(
         LIMIT ?
     """
 
-    parametros = [match, pre_limite] + parametros_excluir + [limite]
+    frames = []
+    matches_executados = []
     with conectar_licitacon(caminho_sqlite) as con:
-        df = pd.read_sql_query(sql, con, params=parametros, dtype=str)
+        for nome_estrategia, match in matches:
+            matches_executados.append((nome_estrategia, match))
+            parametros = [match, pre_limite] + parametros_excluir + [limite]
+            inicio_tentativa = time.perf_counter()
+            df_tentativa = pd.read_sql_query(sql, con, params=parametros, dtype=str)
+            df_tentativa["_fts_strategy"] = nome_estrategia
+            frames.append(df_tentativa)
+            logger.info(
+                "FTS5 operacional tentativa=%s match=%s candidatos=%s tempo_ms=%s",
+                nome_estrategia,
+                match,
+                len(df_tentativa),
+                round((time.perf_counter() - inicio_tentativa) * 1000, 2),
+            )
+            if _strict_zero_deve_abortar(nome_estrategia, len(df_tentativa), descricao_busca):
+                logger.info(
+                    "[expansao_hard_abort] origem=fts5_operacional tentativa=%s motivo_aborto=baixa_aderencia match=%s",
+                    nome_estrategia,
+                    match,
+                )
+                continue
+            if nome_estrategia.startswith("and_") and len(df_tentativa) == 0:
+                logger.info(
+                    "[semantic_fallback] tentativa=%s candidatos=0 acao=continuar_sem_atributos_fracos match=%s",
+                    nome_estrategia,
+                    match,
+                )
+            if _strict_first_deve_parar(nome_estrategia, len(df_tentativa), limite, descricao_busca):
+                logger.info(
+                    "FTS5 operacional strict_first_stop tentativa=%s candidatos=%s limite=%s",
+                    nome_estrategia,
+                    len(df_tentativa),
+                    limite,
+                )
+                break
+            if len(pd.concat(frames, ignore_index=True).drop_duplicates(subset=["_operacional_id"])) >= limite:
+                break
+
+    df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if not df.empty:
+        df = df.drop_duplicates(subset=["_operacional_id"]).head(limite)
 
     return _registrar_resultado_busca(
         df,
-        "fts5_operational",
+        "fts5_operational_multi",
         inicio,
         len(df),
-        detalhe=f"match={match}",
+        detalhe="; ".join(f"{nome}={match}" for nome, match in matches_executados),
         banco="operational",
         caminho=caminho_sqlite,
     )
@@ -628,22 +890,51 @@ def carregar_candidatos_runtime(
     for tentativa in tentativas:
         try:
             if tentativa == "operational":
+                chave_cache, nucleo = _cache_key_candidatos(
+                    "operational",
+                    operational_path,
+                    descricao_busca,
+                    limite,
+                    excluir_municipio,
+                )
+                cached = _obter_cache_candidatos(chave_cache, nucleo.get("semantic_core", ""))
+                if cached is not None:
+                    cached.attrs["sqlite_search"]["mode"] = mode
+                    cached.attrs["sqlite_search"]["fallback"] = mode == "auto" and tentativa != tentativas[0]
+                    return cached
+                descricao_sqlite = nucleo.get("search_core") or descricao_busca
                 df = carregar_candidatos_operacional(
                     caminho_sqlite=operational_path,
-                    descricao_busca=descricao_busca,
+                    descricao_busca=descricao_sqlite,
                     criterios=criterios,
                     limite=limite,
                     excluir_municipio=excluir_municipio,
                 )
-                if df is not None and not df.empty:
+                if df is not None and (not df.empty or df.attrs.get("sqlite_search")):
+                    df = _salvar_cache_candidatos(chave_cache, df, nucleo.get("semantic_core", ""))
                     df.attrs["sqlite_search"]["mode"] = mode
                     df.attrs["sqlite_search"]["fallback"] = mode == "auto" and tentativa != tentativas[0]
+                    df.attrs["sqlite_search"]["descricao_original"] = descricao_busca
+                    df.attrs["sqlite_search"]["descricao_sqlite"] = descricao_sqlite
                     return df
                 erros.append("operational indisponivel ou sem candidatos")
             else:
+                chave_cache, nucleo = _cache_key_candidatos(
+                    "raw",
+                    raw_path,
+                    descricao_busca,
+                    limite,
+                    excluir_municipio,
+                )
+                cached = _obter_cache_candidatos(chave_cache, nucleo.get("semantic_core", ""))
+                if cached is not None:
+                    cached.attrs["sqlite_search"]["mode"] = mode
+                    cached.attrs["sqlite_search"]["fallback"] = mode == "auto" and tentativa != tentativas[0]
+                    return cached
+                descricao_sqlite = nucleo.get("search_core") or descricao_busca
                 df = carregar_candidatos_sqlite(
                     caminho_sqlite=raw_path,
-                    descricao_busca=descricao_busca,
+                    descricao_busca=descricao_sqlite,
                     criterios=criterios,
                     limite=limite,
                     tabela=tabela,
@@ -651,9 +942,12 @@ def carregar_candidatos_runtime(
                     ordenar_por_relevancia=ordenar_por_relevancia,
                     usar_fts=True,
                 )
-                if df is not None and not df.empty:
+                if df is not None and (not df.empty or df.attrs.get("sqlite_search")):
+                    df = _salvar_cache_candidatos(chave_cache, df, nucleo.get("semantic_core", ""))
                     df.attrs["sqlite_search"]["mode"] = mode
                     df.attrs["sqlite_search"]["fallback"] = mode == "auto" and tentativa != tentativas[0]
+                    df.attrs["sqlite_search"]["descricao_original"] = descricao_busca
+                    df.attrs["sqlite_search"]["descricao_sqlite"] = descricao_sqlite
                     return df
                 erros.append("raw sem candidatos")
         except Exception as erro:
