@@ -1,0 +1,439 @@
+{% extends "base.html" %}
+
+{% set page_title = "Pesquisa em lote" %}
+
+{% macro status_label(status) -%}
+  {%- if status == "validado" -%}Validado
+  {%- elif status == "revisar" -%}Revisar
+  {%- elif status == "em_analise" -%}Em analise
+  {%- else -%}Nao pesquisado
+  {%- endif -%}
+{%- endmacro %}
+
+{% block content %}
+  {% if workspace.itens %}
+    <details class="import-drawer">
+      <summary>
+        <span>Importacao de itens</span>
+        <strong>{{ workspace.itens|length }} item(ns) na cesta</strong>
+      </summary>
+  {% endif %}
+
+  <section class="panel batch-panel {{ 'import-panel-compact' if workspace.itens else '' }}">
+    <div class="panel-header">
+      <div>
+        <p class="eyebrow">Cesta de compras · ate 200 itens</p>
+        <h2>Mini planilha de itens</h2>
+      </div>
+      {% if resumo %}
+        <span class="tag">{{ resumo.sucesso }} importado(s)</span>
+      {% endif %}
+    </div>
+
+    <form id="batch-form" method="post" action="{{ url_for('pesquisa_lote.pesquisa_lote') }}">
+      <input type="hidden" name="tolerancia_percentual" value="{{ tolerancia_percentual }}">
+      <input type="hidden" name="quantidade_resultados" value="{{ quantidade_resultados }}">
+      <input type="hidden" name="periodo_pesquisa" value="{{ periodo_pesquisa }}">
+      <input type="hidden" name="data_inicial" value="{{ data_inicial }}">
+      <input type="hidden" name="data_final" value="{{ data_final }}">
+      <input type="hidden" name="orgao_origem" value="{{ orgao_origem }}">
+      {% if desconsiderar_orgao_origem %}
+        <input type="hidden" name="desconsiderar_orgao_origem" value="1">
+      {% endif %}
+      {% for fonte in fontes %}
+        <input type="hidden" name="fontes" value="{{ fonte }}">
+      {% endfor %}
+      <div class="batch-toolbar">
+        <button class="secondary-button" type="button" id="add-row">Adicionar linha</button>
+        <button class="primary-button" type="submit" id="submit-batch">Importar para cesta</button>
+      </div>
+
+      <div class="sheet-status" id="sheet-status" data-operational-limit="200"></div>
+
+      <div class="batch-progress" id="batch-progress" aria-live="polite">
+        <div class="progress-track">
+          <div class="progress-bar" id="batch-progress-bar"></div>
+        </div>
+        <p class="progress-label" id="batch-progress-label">Importando itens...</p>
+      </div>
+
+      <div class="sheet-wrap">
+        <table class="sheet-table" id="batch-table">
+          <thead>
+            <tr>
+              <th class="col-item">Item</th>
+              <th>Descricao</th>
+              <th class="col-qtd">Quantidade</th>
+              <th class="col-unidade">Unidade</th>
+              <th class="col-actions"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for linha in linhas_planilha %}
+              <tr>
+                <td><input class="item-number sheet-cell" type="text" name="item_numero[]" value="{{ linha.numero }}"></td>
+                <td><input class="sheet-cell description-cell" type="text" name="descricao[]" value="{{ linha.descricao }}" placeholder="Descricao do item"></td>
+                <td><input class="sheet-cell quantity-cell" type="text" name="quantidade[]" value="{{ linha.quantidade }}" inputmode="decimal" placeholder="0"></td>
+                <td><input class="sheet-cell unit-cell" type="text" name="unidade[]" value="{{ linha.unidade or 'UN' }}" maxlength="12" placeholder="UN"></td>
+                <td><button class="icon-button remove-row" type="button" title="Remover linha">×</button></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <p class="hint">Cole direto do Excel/LibreOffice: descricao, quantidade e unidade serao distribuidas automaticamente.</p>
+    </form>
+  </section>
+
+  {% if workspace.itens %}
+    </details>
+  {% endif %}
+
+  {% if resumo and not workspace.itens %}
+    <section class="panel panel-spaced">
+      {% if pesquisa_id %}
+        <p class="search-diagnostics">Importacao salva no historico com ID {{ pesquisa_id }}.</p>
+      {% endif %}
+      <div class="stats-row">
+        <div><strong>{{ resumo.itens_validos }}</strong><span>Itens validos</span></div>
+        <div><strong>{{ resumo.sucesso }}</strong><span>Importados</span></div>
+        <div><strong>{{ resumo.erros }}</strong><span>Com erro</span></div>
+        <div><strong>{{ resumo.tempo_total_ms }}</strong><span>Tempo ms</span></div>
+      </div>
+    </section>
+  {% endif %}
+
+  {% if erros %}
+    <section class="panel panel-spaced">
+      <div class="panel-header">
+        <div>
+          <p class="eyebrow">Validacao</p>
+          <h2>Linhas ignoradas</h2>
+        </div>
+      </div>
+      <div class="error-list">
+        {% for erro in erros %}
+          <div class="alert">Linha {{ erro.linha }}: {{ erro.erro }} <small>{{ erro.texto }}</small></div>
+        {% endfor %}
+      </div>
+    </section>
+  {% endif %}
+
+  {% if workspace.itens %}
+    <section class="panel panel-spaced operational-workspace">
+      <div class="panel-header">
+        <div>
+          <p class="eyebrow">Workflow operacional</p>
+          <h2>{{ workspace.cotacao_nome or "Workspace de pesquisa" }}</h2>
+        </div>
+        <div class="workspace-actions">
+          <span class="tag">{{ workspace.itens|length }} item(ns)</span>
+          <a class="secondary-button slim" href="{{ url_for('cotacoes.listar') }}">Minhas cotacoes</a>
+        </div>
+      </div>
+      <div class="workspace-grid" data-workspace-grid>
+        <aside class="workspace-nav" data-workspace-nav>
+          <div class="workspace-list-header">
+            <span class="workspace-nav-title">Cesta importada</span>
+            <strong>{{ workspace.itens|length }}</strong>
+            <button class="secondary-button slim" type="button" data-workspace-nav-toggle>Mostrar itens</button>
+          </div>
+          <div class="workspace-nav-summary">
+            <strong>{{ workspace.itens|length }} itens</strong>
+            <span>Item atual: {{ selected_item.numero or selected_item.linha if selected_item else "-" }}</span>
+          </div>
+          <div class="workspace-list" data-workspace-list>
+          {% for item in workspace.itens %}
+            <a class="workspace-row {{ 'is-active' if selected_item and selected_item.item_uid == item.item_uid else '' }}" href="{{ url_for('pesquisa_lote.pesquisa_lote', item=item.item_uid) }}">
+              <span class="workspace-number">{{ item.numero or item.linha }}</span>
+              <span>
+                <strong>{{ item.semantic_core or item.descricao_original }}</strong>
+                <small>{{ status_label(item.status_operacional) }} · {{ item.resultados|length }} resultado(s)</small>
+              </span>
+            </a>
+          {% endfor %}
+          </div>
+        </aside>
+
+        {% if selected_item %}
+          <div class="workspace-detail">
+            <div class="panel-header compact-header">
+              <div>
+                <p class="eyebrow">Item {{ selected_item.numero or selected_item.linha }} · {{ selected_item.unidade or "UN" }}</p>
+                <h2>{{ selected_item.semantic_core or selected_item.descricao_original }}</h2>
+              </div>
+              <div class="workspace-actions">
+                {% if prev_item %}
+                  <a class="secondary-button slim" href="{{ url_for('pesquisa_lote.pesquisa_lote', item=prev_item.item_uid) }}">Anterior</a>
+                {% endif %}
+                {% if next_item %}
+                  <a class="secondary-button slim" href="{{ url_for('pesquisa_lote.pesquisa_lote', item=next_item.item_uid) }}">Proximo</a>
+                {% endif %}
+                <form method="post" action="{{ url_for('pesquisa_lote.atualizar_status_item', item_uid=selected_item.item_uid) }}">
+                  <select name="status_operacional" class="compact-select" onchange="this.form.submit()">
+                    <option value="nao_pesquisado" {{ 'selected' if selected_item.status_operacional == 'nao_pesquisado' else '' }}>Nao pesquisado</option>
+                    <option value="em_analise" {{ 'selected' if selected_item.status_operacional == 'em_analise' else '' }}>Em analise</option>
+                    <option value="validado" {{ 'selected' if selected_item.status_operacional == 'validado' else '' }}>Validado</option>
+                    <option value="revisar" {{ 'selected' if selected_item.status_operacional == 'revisar' else '' }}>Revisar</option>
+                  </select>
+                </form>
+              </div>
+            </div>
+
+            <form class="semantic-form" method="post" action="{{ url_for('pesquisa_lote.pesquisar_item_workspace', item_uid=selected_item.item_uid) }}">
+              <div class="operational-filters">
+                <div class="filter-group">
+                  <span class="label">Provider</span>
+                  <label class="source-option">
+                    <input type="checkbox" name="fontes" value="todos" data-source-all>
+                    <span>Todos</span>
+                  </label>
+                  <label class="source-option">
+                    <input type="checkbox" name="fontes" value="licitacon" data-source-item {{ 'checked' if 'licitacon' in workspace.fontes else '' }}>
+                    <span>LicitaCon</span>
+                  </label>
+                  <label class="source-option">
+                    <input type="checkbox" name="fontes" value="pncp" data-source-item {{ 'checked' if 'pncp' in workspace.fontes else '' }}>
+                    <span>PNCP</span>
+                  </label>
+                  <label class="source-option source-option-disabled" title="Provider em preparacao">
+                    <input type="checkbox" value="comprasgov" disabled data-source-disabled>
+                    <span>Compras.gov</span>
+                    <em>Em breve</em>
+                  </label>
+                  <label class="source-option source-option-disabled" title="Provider em preparacao">
+                    <input type="checkbox" value="internet" disabled data-source-disabled>
+                    <span>Internet</span>
+                    <em>Em breve</em>
+                  </label>
+                  <label class="source-option source-option-disabled" title="Provider em preparacao">
+                    <input type="checkbox" value="fornecedores" disabled data-source-disabled>
+                    <span>Fornecedores</span>
+                    <em>Em breve</em>
+                  </label>
+                </div>
+
+                <div class="filter-group">
+                  <span class="label">Estrategia</span>
+                  {% set estrategia_atual = selected_item.estrategia_busca or 'inteligente' %}
+                  <label class="source-option">
+                    <input type="radio" name="estrategia_busca" value="inteligente" {{ 'checked' if estrategia_atual == 'inteligente' else '' }}>
+                    <span>Inteligente</span>
+                  </label>
+                  <label class="source-option">
+                    <input type="radio" name="estrategia_busca" value="rigida" {{ 'checked' if estrategia_atual == 'rigida' else '' }}>
+                    <span>Rigida</span>
+                  </label>
+                  <label class="source-option">
+                    <input type="radio" name="estrategia_busca" value="ampla" {{ 'checked' if estrategia_atual == 'ampla' else '' }}>
+                    <span>Ampla</span>
+                  </label>
+                </div>
+
+                <label class="field compact-field">
+                  <span>Quantidade</span>
+                  <input type="text" name="quantidade_item" value="{{ selected_item.quantidade_txt or '0' }}" inputmode="decimal">
+                </label>
+                <label class="field compact-field">
+                  <span>Unidade</span>
+                  <input type="text" name="unidade_item" value="{{ selected_item.unidade or 'UN' }}" maxlength="12">
+                </label>
+                <label class="field compact-field">
+                  <span>Tolerancia (%)</span>
+                  <input type="text" name="tolerancia_percentual" value="{{ selected_item.tolerancia_percentual or tolerancia_percentual }}" inputmode="decimal">
+                </label>
+                <div class="filter-summary" data-quantity-range>
+                  <span>Faixa quantidade</span>
+                  <strong data-quantity-range-output>{{ selected_item.qtd_min_txt }} a {{ selected_item.qtd_max_txt }}</strong>
+                </div>
+                <div class="filter-group period-ops">
+                  <span class="label">Periodo</span>
+                  {% set periodo_atual = workspace.config.periodo_pesquisa or periodo_pesquisa %}
+                  <label class="source-option">
+                    <input type="radio" name="periodo_pesquisa" value="6m" {{ 'checked' if periodo_atual == '6m' else '' }}>
+                    <span>6 meses</span>
+                  </label>
+                  <label class="source-option">
+                    <input type="radio" name="periodo_pesquisa" value="12m" {{ 'checked' if periodo_atual == '12m' else '' }}>
+                    <span>12 meses</span>
+                  </label>
+                  <label class="source-option">
+                    <input type="radio" name="periodo_pesquisa" value="personalizado" {{ 'checked' if periodo_atual == 'personalizado' else '' }}>
+                    <span>Personalizado</span>
+                  </label>
+                </div>
+                <label class="field compact-field period-custom-field" data-period-custom>
+                  <span>Data inicial</span>
+                  <input type="date" name="data_inicial" value="{{ workspace.config.data_inicial or '' }}">
+                </label>
+                <label class="field compact-field period-custom-field" data-period-custom>
+                  <span>Data final</span>
+                  <input type="date" name="data_final" value="{{ workspace.config.data_final or '' }}">
+                </label>
+                <label class="field compact-field">
+                  <span>Orgao origem</span>
+                  <input type="text" name="orgao_origem" value="{{ workspace.config.orgao_origem or orgao_origem }}">
+                </label>
+                <label class="source-option filter-check">
+                  <input type="checkbox" name="desconsiderar_orgao_origem" value="1" {{ 'checked' if workspace.config.desconsiderar_orgao_origem else '' }}>
+                  <span>Desconsiderar origem</span>
+                </label>
+              </div>
+
+              <details class="ai-analysis">
+                <summary>Mostrar analise IA</summary>
+                <div class="criteria-grid compact">
+                  <label class="field">
+                    <span>Descricao original</span>
+                    <textarea readonly rows="3">{{ selected_item.descricao_original }}</textarea>
+                  </label>
+                  <label class="field">
+                    <span>Descricao IA</span>
+                    <textarea name="descricao_ia" rows="3">{{ selected_item.descricao_ia }}</textarea>
+                  </label>
+                  <label class="field">
+                    <span>Nucleo inteligente</span>
+                    <input type="text" name="semantic_core" value="{{ selected_item.semantic_core }}">
+                  </label>
+                </div>
+
+                <div class="criteria-grid compact">
+                  <label class="field">
+                    <span>Termos obrigatorios</span>
+                    <input type="text" name="termos_obrigatorios" value="{{ selected_item.termos_obrigatorios|join(', ') }}">
+                  </label>
+                  <label class="field">
+                    <span>Termos importantes</span>
+                    <input type="text" name="termos_importantes" value="{{ selected_item.termos_importantes|join(', ') }}">
+                  </label>
+                  <label class="field">
+                    <span>Termos excluir</span>
+                    <input type="text" name="termos_excluir" value="{{ selected_item.termos_excluir|join(', ') }}">
+                  </label>
+                </div>
+              </details>
+
+              <div class="batch-toolbar compact-toolbar">
+                <input type="hidden" name="quantidade_resultados" value="{{ workspace.config.quantidade_resultados or quantidade_resultados }}">
+                <button class="primary-button" type="submit">Pesquisar</button>
+                <button class="secondary-button" type="submit">+ Nova pesquisa</button>
+              </div>
+            </form>
+
+            {% if selected_item.erro %}
+              <div class="alert">{{ selected_item.erro }}</div>
+            {% endif %}
+
+            {% if item_indicators %}
+              <div class="sample-indicators">
+                <div class="indicator-chips">
+                  {% for chip in item_indicators.chips %}
+                    <span class="indicator-chip indicator-{{ chip.tipo }}">{{ chip.texto }}</span>
+                  {% endfor %}
+                </div>
+                <div class="indicator-metrics">
+                  <div>
+                    <span>Score medio</span>
+                    <strong>{{ item_indicators.score_medio|percentual if item_indicators.score_medio is not none else "-" }}</strong>
+                  </div>
+                  <div>
+                    <span>Validos</span>
+                    <strong>{{ item_indicators.validos }}</strong>
+                  </div>
+                  <div>
+                    <span>Dispersao</span>
+                    <strong>{{ (item_indicators.dispersao_percentual|percentual) ~ "%" if item_indicators.dispersao_percentual is not none else "-" }}</strong>
+                  </div>
+                  <div>
+                    <span>Amostra</span>
+                    <strong>{{ item_indicators.total }}</strong>
+                  </div>
+                </div>
+              </div>
+            {% endif %}
+
+            {% if selected_item.historico %}
+              <div class="stats-row">
+                <div><strong>{{ selected_item.historico|length }}</strong><span>Pesquisas</span></div>
+                <div><strong>{{ selected_item.resultados|length }}</strong><span>Resultados acumulados</span></div>
+                {% if selected_item.estatisticas %}
+                  <div><strong>{{ selected_item.estatisticas.total }}</strong><span>Ultima busca</span></div>
+                  <div><strong>{{ selected_item.estatisticas.tempo_total_ms }}</strong><span>Tempo ms</span></div>
+                {% endif %}
+              </div>
+            {% endif %}
+
+            {% if selected_item.resultados %}
+              <div class="batch-results">
+                {% for r in selected_item.resultados %}
+                  <article class="result-card compact-card">
+                    <div class="result-score">
+                      <strong>{{ (r.score|percentual) ~ "%" if r.score is not none else "-" }}</strong>
+                      <span>{{ r.modo_busca }}</span>
+                    </div>
+                    <div class="result-body">
+                      <div class="result-meta">
+                        <span class="validation-badge validation-{{ (r.status_validacao or 'VALIDO')|lower|replace('_', '-')|replace(' ', '-') }}">{{ r.status_validacao or "VALIDO" }}</span>
+                        <span>{{ r.orgao or "Orgao nao informado" }}</span>
+                        <span>{{ r.ano or "-" }}</span>
+                        {% if r.link_licitacon %}
+                          <a class="source-link" href="{{ r.link_licitacon }}" target="_blank" rel="noopener">{{ r.fonte_base or "LicitaCon RS" }}</a>
+                        {% else %}
+                          <span>{{ r.fonte_base or "LicitaCon RS" }}</span>
+                        {% endif %}
+                      </div>
+                      <h3>{{ r.descricao }}</h3>
+                      {% if r.motivos_alerta %}
+                        <p class="result-warning">{{ r.motivos_alerta }}</p>
+                      {% endif %}
+                      <dl class="result-grid">
+                        <div><dt>Valor</dt><dd>{{ r.valor_unitario|moeda_br }}</dd></div>
+                        <div><dt>Quantidade encontrada</dt><dd>{{ r.qtd or "-" }} {{ r.unidade or "" }}</dd></div>
+                        <div><dt>Fornecedor</dt><dd>{{ r.vencedor or "-" }}</dd></div>
+                      </dl>
+                      <div class="result-actions">
+                        <form method="post" action="{{ url_for('cesta.adicionar') }}">
+                          <input type="hidden" name="return_to" value="{{ request.full_path }}">
+                          <input type="hidden" name="item_uid" value="{{ selected_item.item_uid }}">
+                          <input type="hidden" name="item_numero" value="{{ selected_item.numero or selected_item.linha }}">
+                          <input type="hidden" name="resultados_alvo" value="{{ workspace.config.quantidade_resultados or quantidade_resultados }}">
+                          <input type="hidden" name="total_itens_cesta" value="{{ workspace.itens|length }}">
+                          <input type="hidden" name="resultado_uid" value="{{ r.resultado_uid }}">
+                          <input type="hidden" name="item_pesquisado" value="{{ selected_item.descricao_original }}">
+                          <input type="hidden" name="quantidade_item" value="{{ selected_item.quantidade_txt }}">
+                          <input type="hidden" name="unidade_item" value="{{ selected_item.unidade or 'UN' }}">
+                          <input type="hidden" name="descricao" value="{{ r.descricao }}">
+                          <input type="hidden" name="orgao" value="{{ r.orgao or '' }}">
+                          <input type="hidden" name="fornecedor" value="{{ r.vencedor or '' }}">
+                          <input type="hidden" name="valor_unitario" value="{{ r.valor_unitario or '' }}">
+                          <input type="hidden" name="quantidade" value="{{ r.qtd or '' }}">
+                          <input type="hidden" name="score" value="{{ r.score or '' }}">
+                          <input type="hidden" name="status_validacao" value="{{ r.status_validacao or '' }}">
+                          <input type="hidden" name="motivos_alerta" value="{{ r.motivos_alerta or '' }}">
+                          <input type="hidden" name="categoria_detectada" value="{{ r.categoria_detectada or '' }}">
+                          <input type="hidden" name="score_quantidade" value="{{ r.score_quantidade or '' }}">
+                          <input type="hidden" name="fonte_prioridade" value="{{ r.fonte_prioridade or '' }}">
+                          <input type="hidden" name="fonte" value="{{ r.fonte_base or 'LicitaCon RS' }}">
+                          <input type="hidden" name="link_origem" value="{{ r.link_licitacon or '' }}">
+                          <input type="hidden" name="modalidade" value="{{ r.modalidade or '' }}">
+                          <input type="hidden" name="ano" value="{{ r.ano or '' }}">
+                          <input type="hidden" name="processo" value="{{ r.processo or '' }}">
+                          <button class="secondary-button slim" type="submit">+ adicionar</button>
+                        </form>
+                      </div>
+                    </div>
+                  </article>
+                {% endfor %}
+              </div>
+            {% else %}
+              <p class="hint">Item importado. Confira os filtros operacionais e clique em Pesquisar.</p>
+            {% endif %}
+          </div>
+        {% endif %}
+      </div>
+    </section>
+  {% endif %}
+
+  <script src="{{ url_for('static', filename='js/lote.js', v='20260520-workspace') }}"></script>
+{% endblock %}

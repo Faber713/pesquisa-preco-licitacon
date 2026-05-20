@@ -1,29 +1,124 @@
-# Arquivos pesados e bases locais
+# ==================================================
+# BANCOS DE DADOS / BASES LOCAIS
+# ==================================================
+
 licitacon.sqlite
 *.sqlite
+*.sqlite-shm
+*.sqlite-wal
 *.db
+
 bases_dados/
 dados/
-*.zip
+database/backups/
 
-# Saidas geradas
+# ==================================================
+# CACHE / LOGS / DEBUG
+# ==================================================
+
+storage/cache/
+storage/temp/
+storage/logs/
+storage/debug/
+storage/workspaces/
+storage/screenshots/*
+!storage/screenshots/README.md
+
+*.log
+
+# ==================================================
+# EXPORTAÇÕES / ARQUIVOS GERADOS
+# ==================================================
+
 resultado_da_busca_item.csv
-*.html
+
 build/
 dist/
+exports/
 
-# Python / Streamlit
+# ==================================================
+# PYTHON
+# ==================================================
+
 __pycache__/
 *.pyc
-.streamlit/secrets.toml
+*.pyo
+*.pyd
 
-# Ambientes locais
+.pytest_cache/
+.mypy_cache/
+
+# ==================================================
+# AMBIENTES VIRTUAIS
+# ==================================================
+
 .venv/
 venv/
 env/
-.env
 
-# Sistema / editor
+# ==================================================
+# CONFIGURAÇÕES LOCAIS / SEGREDOS
+# ==================================================
+
+.env
+.streamlit/secrets.toml
+
+# ==================================================
+# SQLITE TEMP FILES
+# ==================================================
+
+*.sqlite-journal
+
+# ==================================================
+# SISTEMA / EDITOR
+# ==================================================
+
 .DS_Store
 Thumbs.db
+
 .vscode/
+.idea/
+
+# ==================================================
+# NODE / FRONTEND FUTURO
+# ==================================================
+
+node_modules/
+
+# ==================================================
+# SISTEMA OPERACIONAL
+# ==================================================
+
+desktop.ini
+
+# ==================================================
+# RAW JSON / PAYLOADS PNCP
+# ==================================================
+
+storage/debug/pncp/
+
+# ==================================================
+# COLLECTOR TEMP
+# ==================================================
+
+collectors/**/temp/
+
+# ==================================================
+# RELATÓRIOS TEMPORÁRIOS
+# ==================================================
+
+reports/temp/
+
+# ==================================================
+# NÃO IGNORAR HTML DO SISTEMA WEB
+# ==================================================
+
+!web/templates/
+!web/templates/**/*.html
+
+# ==================================================
+# NÃO IGNORAR DOCUMENTAÇÃO
+# ==================================================
+
+!docs/**/*.md
+!README.md

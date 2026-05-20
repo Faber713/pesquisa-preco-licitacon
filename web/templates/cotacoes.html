@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+
+{% set page_title = "Minhas cotacoes" %}
+
+{% macro status_cotacao(status) -%}
+  {%- if status == "finalizada" -%}Finalizada
+  {%- elif status == "em_andamento" -%}Em andamento
+  {%- else -%}Nao iniciada
+  {%- endif -%}
+{%- endmacro %}
+
+{% block content %}
+  <section class="panel cotacoes-panel">
+    <div class="panel-header">
+      <div>
+        <p class="eyebrow">Ambiente operacional</p>
+        <h2>Minhas cotacoes</h2>
+      </div>
+    </div>
+
+    <form class="cotacao-create" method="post" action="{{ url_for('cotacoes.criar') }}">
+      <label class="field">
+        <span>Nome</span>
+        <input type="text" name="nome" placeholder="EPIs 2026" required>
+      </label>
+      <label class="field">
+        <span>Categoria</span>
+        <input type="text" name="categoria" placeholder="EPIs, limpeza, expediente">
+      </label>
+      <button class="primary-button" type="submit">Criar cotacao</button>
+    </form>
+  </section>
+
+  <section class="panel panel-spaced cotacoes-panel">
+    <div class="cotacoes-list">
+      {% for cotacao in cotacoes %}
+        <article class="cotacao-card">
+          <div>
+            <span class="status-pill">{{ status_cotacao(cotacao.status) }}</span>
+            <h3>{{ cotacao.nome or cotacao.item_pesquisado }}</h3>
+            <p>{{ cotacao.categoria or "Sem categoria" }} - Atualizada em {{ cotacao.atualizado_em or cotacao.criado_em }}</p>
+          </div>
+          <div class="cotacao-progress">
+            <strong>{{ cotacao.progresso_percentual|percentual }}%</strong>
+            <span>{{ cotacao.itens_concluidos or 0 }}/{{ cotacao.total_itens or 0 }} item(ns)</span>
+          </div>
+          <div class="cotacao-actions">
+            <a class="secondary-button slim" href="{{ url_for('pesquisa_lote.pesquisa_lote', cotacao_id=cotacao.id) }}">Abrir</a>
+            <form method="post" action="{{ url_for('cotacoes.status', cotacao_id=cotacao.id) }}">
+              <input type="hidden" name="status" value="finalizada">
+              <button class="secondary-button slim" type="submit">Finalizar</button>
+            </form>
+            <details class="cotacao-menu">
+              <summary>Editar</summary>
+              <form method="post" action="{{ url_for('cotacoes.editar', cotacao_id=cotacao.id) }}">
+                <label class="field">
+                  <span>Nome</span>
+                  <input type="text" name="nome" value="{{ cotacao.nome or cotacao.item_pesquisado }}" required>
+                </label>
+                <label class="field">
+                  <span>Categoria</span>
+                  <input type="text" name="categoria" value="{{ cotacao.categoria or '' }}">
+                </label>
+                <button class="secondary-button slim" type="submit">Salvar</button>
+              </form>
+              <form method="post" action="{{ url_for('cotacoes.excluir', cotacao_id=cotacao.id) }}">
+                <button class="danger-button slim" type="submit">Excluir</button>
+              </form>
+            </details>
+          </div>
+        </article>
+      {% else %}
+        <p class="hint">Nenhuma cotacao criada ainda.</p>
+      {% endfor %}
+    </div>
+  </section>
+{% endblock %}

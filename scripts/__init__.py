@@ -1,0 +1,1 @@
+"""Entrypoints e scripts operacionais."""

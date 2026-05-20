@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% set page_title = "Usuario" %}
+
+{% block content %}
+  <section class="panel">
+    <div class="panel-header">
+      <div>
+        <p class="eyebrow">Acesso</p>
+        <h2>{{ "Editar usuario" if usuario else "Novo usuario" }}</h2>
+      </div>
+    </div>
+
+    {% if erro %}
+      <div class="alert">{{ erro }}</div>
+    {% endif %}
+
+    <form class="search-form" method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label class="field">
+        <span>Nome</span>
+        <input type="text" name="nome" value="{{ usuario.nome if usuario else '' }}" required>
+      </label>
+      <label class="field">
+        <span>Email</span>
+        <input type="email" name="email" value="{{ usuario.email if usuario else '' }}" required>
+      </label>
+      <label class="field">
+        <span>Perfil</span>
+        <select name="perfil">
+          {% set perfil_atual = usuario.perfil if usuario else "usuario" %}
+          <option value="usuario" {{ "selected" if perfil_atual == "usuario" else "" }}>Usuario</option>
+          <option value="admin" {{ "selected" if perfil_atual == "admin" else "" }}>Administrador</option>
+        </select>
+      </label>
+      <label class="source-option">
+        <input type="checkbox" name="ativo" value="1" {{ "checked" if not usuario or usuario.ativo else "" }}>
+        <span>Usuario ativo</span>
+      </label>
+      <label class="field">
+        <span>{{ "Nova senha" if usuario else "Senha" }}</span>
+        <input type="password" name="senha" {{ "required" if not usuario else "" }}>
+      </label>
+      <div class="form-actions">
+        <button class="primary-button" type="submit">Salvar</button>
+        <a class="secondary-button" href="{{ url_for('admin.usuarios') }}">Cancelar</a>
+      </div>
+    </form>
+  </section>
+{% endblock %}

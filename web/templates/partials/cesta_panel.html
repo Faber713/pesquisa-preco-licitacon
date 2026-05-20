@@ -1,0 +1,132 @@
+<aside class="basket-sidebar" id="basket-sidebar" data-basket-count="{{ cesta_resumo.total }}">
+  <div class="basket-header">
+    <div>
+      <p class="eyebrow">Assistente de formacao</p>
+      <h2>Cesta de precos</h2>
+      {% if cesta_resumo.item_atual_numero %}
+        <small>Item atual: {{ cesta_resumo.item_atual_numero }} de {{ cesta_resumo.total_itens_planejados }}</small>
+      {% else %}
+        <small>{{ cesta_resumo.itens_finalizados }}/{{ cesta_resumo.total_itens_planejados }} item(ns) finalizado(s)</small>
+      {% endif %}
+    </div>
+    <div class="basket-header-actions">
+      <span class="tag">{{ cesta_resumo.total }}</span>
+      <button class="mini-button basket-toggle" type="button" data-basket-toggle>Ocultar</button>
+    </div>
+  </div>
+
+  <form class="basket-method" method="post" action="{{ url_for('cesta.metodologia') }}">
+    <input type="hidden" name="return_to" value="{{ request.full_path }}">
+    <label class="field">
+      <span>Metodologia global</span>
+      <select name="metodologia_formacao_preco" onchange="this.form.requestSubmit()">
+        <option value="mediana" {{ 'selected' if cesta_resumo.metodologia_formacao_preco == 'mediana' else '' }}>Mediana</option>
+        <option value="media" {{ 'selected' if cesta_resumo.metodologia_formacao_preco == 'media' else '' }}>Media simples</option>
+        <option value="menor_preco" {{ 'selected' if cesta_resumo.metodologia_formacao_preco == 'menor_preco' else '' }}>Menor preco</option>
+        <option value="combinado" {{ 'selected' if cesta_resumo.metodologia_formacao_preco == 'combinado' else '' }}>Combinado</option>
+      </select>
+    </label>
+  </form>
+
+  {% if cesta_grupos %}
+    <div class="basket-flow">
+      {% for grupo in cesta_grupos %}
+        <details class="basket-group basket-group-{{ grupo.status }}" {{ 'open' if grupo.status == 'em_edicao' else '' }}>
+          <summary class="basket-group-head">
+            <div>
+              <span class="basket-item-number">ITEM {{ grupo.numero or loop.index }}</span>
+              <strong>{{ grupo.descricao }}</strong>
+              {% if grupo.quantidade %}<small>Quantidade: {{ grupo.quantidade }}</small>{% endif %}
+              <small>Metodologia: {{ grupo.resumo.metodologia_formacao_preco }}</small>
+            </div>
+            <span class="status-badge {{ grupo.status }}">{{ 'FINALIZADO' if grupo.finalizado else 'EM EDICAO' }}</span>
+          </summary>
+
+          <div class="basket-item-summary">
+            <div><span>Valor final</span><strong>{{ grupo.resumo.valor_final|moeda_br }}</strong></div>
+            <div><span>Media</span><strong>{{ grupo.resumo.media|moeda_br }}</strong></div>
+            <div><span>Mediana</span><strong>{{ grupo.resumo.mediana|moeda_br }}</strong></div>
+            <div><span>Menor</span><strong>{{ grupo.resumo.menor|moeda_br }}</strong></div>
+            <div><span>Maior</span><strong>{{ grupo.resumo.maior|moeda_br }}</strong></div>
+            <div><span>Selecionados</span><strong>{{ grupo.considerados }}/{{ grupo.resultados_alvo }}</strong></div>
+          </div>
+
+          <div class="basket-item-actions">
+            {% if grupo.finalizado %}
+              <form method="post" action="{{ url_for('cesta.editar') }}">
+                <input type="hidden" name="return_to" value="{{ request.full_path }}">
+                <input type="hidden" name="item_uid" value="{{ grupo.item_uid }}">
+                <button class="secondary-button slim" type="submit">Editar item</button>
+              </form>
+            {% else %}
+              <form method="post" action="{{ url_for('cesta.finalizar') }}">
+                <input type="hidden" name="return_to" value="{{ request.full_path }}">
+                <input type="hidden" name="item_uid" value="{{ grupo.item_uid }}">
+                <button class="primary-button slim" type="submit">Finalizar cesta do item</button>
+              </form>
+            {% endif %}
+            <form method="post" action="{{ url_for('cesta.remover_item_rota') }}">
+              <input type="hidden" name="return_to" value="{{ request.full_path }}">
+              <input type="hidden" name="item_uid" value="{{ grupo.item_uid }}">
+              <button class="secondary-button slim danger-text" type="submit">Remover item</button>
+            </form>
+          </div>
+
+          {% if not grupo.finalizado %}
+            <div class="basket-list">
+              {% for item in grupo.precos %}
+                <article class="basket-item {{ '' if item.considerar else 'is-muted' }}">
+                  <div class="basket-item-head">
+                    <strong>{{ item.valor_unitario|moeda_br }}</strong>
+                    <form method="post" action="{{ url_for('cesta.remover') }}">
+                      <input type="hidden" name="return_to" value="{{ request.full_path }}">
+                      <input type="hidden" name="item_uid" value="{{ grupo.item_uid }}">
+                      <input type="hidden" name="id" value="{{ item.id }}">
+                      <button class="mini-button danger" type="submit">-</button>
+                    </form>
+                  </div>
+                  <p>{{ item.descricao }}</p>
+                  <small>{{ item.orgao or "-" }} · {{ item.fornecedor or "-" }}</small>
+                  <small>
+                    {% if item.link_origem %}
+                      <a class="source-link" href="{{ item.link_origem }}" target="_blank" rel="noopener">{{ item.fonte }}</a>
+                    {% else %}
+                      {{ item.fonte }} (sem link)
+                    {% endif %}
+                    · {{ item.modalidade or "-" }} · {{ item.ano or "-" }} · score {{ (item.score|percentual) ~ "%" if item.score else "-" }}
+                  </small>
+
+                  <form class="basket-consider-form" method="post" action="{{ url_for('cesta.considerar') }}">
+                    <input type="hidden" name="return_to" value="{{ request.full_path }}">
+                    <input type="hidden" name="item_uid" value="{{ grupo.item_uid }}">
+                    <input type="hidden" name="id" value="{{ item.id }}">
+                    <label class="checkline">
+                      <input type="checkbox" name="considerar" value="1" {{ 'checked' if item.considerar else '' }}>
+                      <span>Considerar este preco</span>
+                    </label>
+                    <input type="text" name="justificativa" value="{{ item.justificativa }}" placeholder="Justificativa de exclusao">
+                    <button class="secondary-button slim" type="submit">Atualizar</button>
+                  </form>
+                </article>
+              {% endfor %}
+            </div>
+          {% else %}
+            <p class="basket-finalized-note">{{ grupo.considerados }} preco(s) considerado(s). Use editar para revisar os precos.</p>
+          {% endif %}
+        </details>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="basket-empty">Selecione resultados nas pesquisas para iniciar a formacao da cesta.</p>
+  {% endif %}
+
+  {% if cesta_itens %}
+    {% if cesta_resumo.itens and cesta_resumo.itens_finalizados == cesta_resumo.itens %}
+      <a class="primary-button basket-clear basket-report-link" href="{{ url_for('dossie.dossie') }}" target="_blank">Gerar dossie</a>
+    {% endif %}
+    <form method="post" action="{{ url_for('cesta.limpar') }}">
+      <input type="hidden" name="return_to" value="{{ request.full_path }}">
+      <button class="secondary-button basket-clear" type="submit">Limpar cesta</button>
+    </form>
+  {% endif %}
+</aside>

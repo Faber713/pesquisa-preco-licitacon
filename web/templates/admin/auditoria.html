@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+
+{% set page_title = "Auditoria" %}
+
+{% block content %}
+  <section class="panel">
+    <div class="panel-header">
+      <div>
+        <p class="eyebrow">Rastreabilidade</p>
+        <h2>Eventos do sistema</h2>
+      </div>
+    </div>
+    {% set auditoria = eventos %}
+    {% include "admin/partials/auditoria_table.html" with context %}
+  </section>
+{% endblock %}

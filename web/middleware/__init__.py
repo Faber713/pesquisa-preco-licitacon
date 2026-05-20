@@ -1,0 +1,1 @@
+"""Middlewares Flask da aplicacao."""

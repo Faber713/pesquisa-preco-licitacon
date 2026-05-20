@@ -1,0 +1,2 @@
+"""Rotas da interface Flask."""
+

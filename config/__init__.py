@@ -1,0 +1,1 @@
+"""Configuracoes centralizadas da aplicacao."""

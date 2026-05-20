@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% set page_title = "Minhas cotacoes" %}
+
+{% block content %}
+  <section class="panel">
+    <div class="panel-header">
+      <div>
+        <p class="eyebrow">Ambiente operacional</p>
+        <h2>Pesquisa continua de precos</h2>
+      </div>
+      <a class="primary-button slim" href="{{ url_for('cotacoes.listar') }}">Abrir cotacoes</a>
+    </div>
+
+    <p>Crie uma cotacao, importe os itens e continue o trabalho depois sem perder progresso.</p>
+
+    <div class="grid">
+      <article class="metric">
+        <span>Backend</span>
+        <strong>Modular</strong>
+        <small>Consumindo pacotes existentes</small>
+      </article>
+      <article class="metric">
+        <span>Busca</span>
+        <strong>Preservada</strong>
+        <small>Sem reimplementar regras</small>
+      </article>
+      <article class="metric">
+        <span>Proxima tela</span>
+        <strong>Pesquisa</strong>
+        <small>Formulario conectado ao search/</small>
+      </article>
+    </div>
+  </section>
+{% endblock %}

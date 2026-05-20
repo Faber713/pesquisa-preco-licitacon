@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ titulo }}</title>
+    <style>
+      :root {
+        --text: #111827;
+        --muted: #5b6472;
+        --line: #d9dee7;
+        --soft: #f6f8fb;
+        --strong: #0f172a;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: #eef2f7;
+        color: var(--text);
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 13px;
+        line-height: 1.45;
+      }
+      .page {
+        width: min(1120px, calc(100% - 32px));
+        margin: 24px auto;
+        background: white;
+        padding: 34px;
+        box-shadow: 0 18px 50px rgba(15, 23, 42, 0.14);
+      }
+      .print-actions {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin: -12px -12px 20px;
+        padding: 12px;
+        background: white;
+        border-bottom: 1px solid var(--line);
+      }
+      button {
+        border: 0;
+        border-radius: 6px;
+        background: #1d4ed8;
+        color: white;
+        cursor: pointer;
+        font-weight: 700;
+        padding: 10px 14px;
+      }
+      h1, h2, h3, p { margin-top: 0; }
+      h1 {
+        margin-bottom: 8px;
+        font-size: 27px;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+      h2 {
+        margin: 28px 0 12px;
+        padding-bottom: 7px;
+        border-bottom: 2px solid var(--strong);
+        font-size: 18px;
+      }
+      h3 {
+        margin: 0 0 10px;
+        font-size: 15px;
+      }
+      .cover {
+        min-height: 360px;
+        display: grid;
+        align-content: center;
+        border: 2px solid var(--strong);
+        padding: 34px;
+        text-align: center;
+      }
+      .cover .orgao {
+        color: var(--muted);
+        font-size: 16px;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+      .cover dl {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        margin: 28px auto 0;
+        max-width: 720px;
+        text-align: left;
+      }
+      dt {
+        color: var(--muted);
+        font-weight: 700;
+      }
+      dd {
+        margin: 3px 0 0;
+        font-weight: 700;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 10px 0 18px;
+      }
+      th, td {
+        border: 1px solid var(--line);
+        padding: 8px;
+        text-align: left;
+        vertical-align: top;
+      }
+      th {
+        background: var(--soft);
+        color: var(--strong);
+        font-size: 12px;
+        text-transform: uppercase;
+      }
+      .item-block {
+        break-inside: avoid;
+        margin-top: 22px;
+        border: 1px solid var(--line);
+      }
+      .item-head {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 14px;
+        padding: 14px;
+        background: var(--soft);
+        border-bottom: 1px solid var(--line);
+      }
+      .item-head strong {
+        display: block;
+        margin-bottom: 4px;
+        font-size: 16px;
+      }
+      .item-value {
+        text-align: right;
+      }
+      .final-value-card {
+        min-width: 185px;
+        border: 2px solid #1d4ed8;
+        border-radius: 8px;
+        background: #eff6ff;
+        padding: 12px 16px;
+      }
+      .final-value-card span {
+        display: block;
+        color: #1e3a8a;
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+      .final-value-card strong {
+        display: block;
+        margin-top: 4px;
+        color: #0f172a;
+        font-size: 25px;
+        line-height: 1.1;
+      }
+      .source-link {
+        color: #1d4ed8;
+        font-weight: 700;
+        text-decoration: none;
+        border-bottom: 1px solid rgba(29, 78, 216, 0.35);
+      }
+      .source-link:hover {
+        border-bottom-color: #1d4ed8;
+      }
+      .item-body {
+        padding: 14px;
+      }
+      .metrics {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 8px;
+        margin-bottom: 14px;
+      }
+      .metric {
+        border: 1px solid var(--line);
+        background: white;
+        padding: 9px;
+      }
+      .metric span {
+        display: block;
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+      }
+      .metric strong {
+        display: block;
+        margin-top: 4px;
+        font-size: 14px;
+      }
+      .technical-footer {
+        margin-top: 28px;
+        border: 1px solid var(--line);
+        background: var(--soft);
+        padding: 14px;
+      }
+      .muted { color: var(--muted); }
+      .page-break { break-before: page; }
+      @media print {
+        body { background: white; }
+        .page {
+          width: auto;
+          margin: 0;
+          padding: 0;
+          box-shadow: none;
+        }
+        .print-actions { display: none; }
+        a { color: inherit; text-decoration: none; }
+        .source-link { border-bottom: 0; }
+      }
+      @media (max-width: 760px) {
+        .page { width: 100%; margin: 0; padding: 18px; }
+        .cover dl, .metrics { grid-template-columns: 1fr; }
+        .item-head { grid-template-columns: 1fr; }
+        .item-value { text-align: left; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <div class="print-actions">
+        <button type="button" onclick="window.print()">Imprimir / Salvar PDF</button>
+      </div>
+
+      <section class="cover">
+        <p class="orgao">{{ orgao }}</p>
+        <h1>{{ titulo }}</h1>
+        <p>Documento tecnico para instrucao de ETP, TR, processo administrativo e fase interna da contratacao.</p>
+        <dl>
+          <div>
+            <dt>Data e hora</dt>
+            <dd>{{ gerado_em.strftime("%d/%m/%Y %H:%M") }}</dd>
+          </div>
+          <div>
+            <dt>Servidor responsavel</dt>
+            <dd>{{ servidor_responsavel }}</dd>
+          </div>
+          <div>
+            <dt>Metodologia global</dt>
+            <dd>{{ metodologia_global }}</dd>
+          </div>
+          <div>
+            <dt>Fontes utilizadas</dt>
+            <dd>{{ fontes_utilizadas|join(", ") }}</dd>
+          </div>
+          <div>
+            <dt>Periodo utilizado</dt>
+            <dd>{{ filtros.periodo }}</dd>
+          </div>
+          <div>
+            <dt>Filtros aplicados</dt>
+            <dd>{{ filtros.exclusao_orgao_origem }}; tolerancia {{ filtros.tolerancia_percentual }}; limite {{ filtros.limite_resultados }}</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section>
+        <h2>Resumo Executivo</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Item</th>
+              <th>Descricao</th>
+              <th>Qtd</th>
+              <th>Metodologia</th>
+              <th>Valor final</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in itens %}
+              <tr>
+                <td>{{ item.numero }}</td>
+                <td>{{ item.descricao }}</td>
+                <td>{{ item.quantidade or "-" }}</td>
+                <td>{{ item.resumo.metodologia_label }}</td>
+                <td>{{ item.resumo.valor_final|moeda_br }}</td>
+              </tr>
+            {% else %}
+              <tr><td colspan="5">Nenhum item selecionado na cesta.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <p>{{ justificativa_automatica }}</p>
+      </section>
+
+      <section>
+        <h2>Detalhamento por Item</h2>
+        {% for item in itens %}
+          <article class="item-block">
+            <header class="item-head">
+              <div>
+                <h3>Item {{ item.numero }}</h3>
+                <strong>{{ item.descricao }}</strong>
+                <span class="muted">Quantidade: {{ item.quantidade or "-" }} · Metodologia: {{ item.resumo.metodologia_label }}</span>
+              </div>
+              <div class="item-value final-value-card">
+                <span>Valor final</span>
+                <strong>{{ item.resumo.valor_final|moeda_br }}</strong>
+              </div>
+            </header>
+            <div class="item-body">
+              <div class="metrics">
+                <div class="metric"><span>Media</span><strong>{{ item.resumo.media|moeda_br }}</strong></div>
+                <div class="metric"><span>Mediana</span><strong>{{ item.resumo.mediana|moeda_br }}</strong></div>
+                <div class="metric"><span>Menor</span><strong>{{ item.resumo.menor|moeda_br }}</strong></div>
+                <div class="metric"><span>Maior</span><strong>{{ item.resumo.maior|moeda_br }}</strong></div>
+                <div class="metric"><span>Considerados</span><strong>{{ item.considerados_qtd }}</strong></div>
+              </div>
+              <div class="metrics">
+                <div class="metric"><span>Desvio padrao</span><strong>{{ item.resumo.desvio_padrao|moeda_br }}</strong></div>
+                <div class="metric"><span>Coef. variacao</span><strong>{{ item.resumo.coeficiente_variacao or 0 }}%</strong></div>
+                <div class="metric"><span>Fontes</span><strong>{{ item.total_precos }}</strong></div>
+                <div class="metric"><span>Alertas</span><strong>{{ item.precos_considerados|selectattr("motivos_alerta")|list|length }}</strong></div>
+                <div class="metric"><span>Anexos web</span><strong>{{ item.evidencias|length }}</strong></div>
+              </div>
+              <p>{{ item.justificativa_automatica }}</p>
+
+              <h3>Precos Considerados</h3>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Orgao</th>
+                    <th>Fornecedor</th>
+                    <th>Valor</th>
+                    <th>Quantidade</th>
+                    <th>Ano</th>
+                    <th>Modalidade</th>
+                    <th>Score</th>
+                    <th>Validacao</th>
+                    <th>Fonte</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for preco in item.precos_considerados %}
+                    <tr>
+                      <td>{{ preco.orgao or "-" }}</td>
+                      <td>{{ preco.fornecedor or "-" }}</td>
+                      <td>{{ preco.valor_unitario|moeda_br }}</td>
+                      <td>{{ preco.quantidade or "-" }}</td>
+                      <td>{{ preco.ano or "-" }}</td>
+                      <td>{{ preco.modalidade or "-" }}</td>
+                      <td>{{ (preco.score|percentual) ~ "%" if preco.score else "-" }}</td>
+                      <td>{{ preco.status_validacao or "VALIDO" }}{% if preco.motivos_alerta %}<br>{{ preco.motivos_alerta }}{% endif %}</td>
+                      <td>
+                        {% if preco.link_origem %}
+                          <a class="source-link" href="{{ preco.link_origem }}" target="_blank" rel="noopener">{{ preco.fonte or "LicitaCon RS" }}</a>
+                        {% else %}
+                          {{ preco.fonte or "LicitaCon RS" }} (sem link)
+                        {% endif %}
+                      </td>
+                    </tr>
+                  {% else %}
+                    <tr><td colspan="9">Nenhum preco considerado.</td></tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+
+              {% if item.precos_desconsiderados %}
+                <h3>Precos Desconsiderados</h3>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Orgao</th>
+                      <th>Fornecedor</th>
+                      <th>Valor</th>
+                      <th>Justificativa</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for preco in item.precos_desconsiderados %}
+                      <tr>
+                        <td>{{ preco.orgao or "-" }}</td>
+                        <td>{{ preco.fornecedor or "-" }}</td>
+                        <td>{{ preco.valor_unitario|moeda_br }}</td>
+                        <td>{{ preco.justificativa or "Preco desconsiderado tecnicamente." }}</td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              {% endif %}
+
+              {% if item.evidencias %}
+                <h3>Anexos Web</h3>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Evidencia</th>
+                      <th>Arquivo</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for evidencia in item.evidencias %}
+                      <tr>
+                        <td>Anexo auditavel de preco em dominio amplo</td>
+                        <td>{{ evidencia }}</td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              {% endif %}
+            </div>
+          </article>
+        {% endfor %}
+      </section>
+
+      <section>
+        <h2>Referencia Historica</h2>
+        <p class="muted">Espaco reservado para futura integracao com series historicas, PNCP, fornecedores cadastrados e demais bases de referencia.</p>
+      </section>
+
+      <section class="technical-footer">
+        <h2>Rodape Tecnico</h2>
+        <p>
+          A pesquisa de precos foi realizada utilizando dados publicos do LicitaCon/TCE-RS,
+          observando criterios de compatibilidade tecnica, faixa quantitativa,
+          similaridade textual e metodologia de formacao de precos definida pelo orgao.
+        </p>
+      </section>
+    </main>
+  </body>
+</html>

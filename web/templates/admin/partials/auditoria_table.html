@@ -1,0 +1,26 @@
+<div class="table-wrap">
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Data</th>
+        <th>Usuario</th>
+        <th>Acao</th>
+        <th>Entidade</th>
+        <th>IP</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for evento in auditoria %}
+        <tr>
+          <td>{{ evento.created_at }}</td>
+          <td>{{ evento.usuario_nome or evento.usuario_email or "-" }}</td>
+          <td>{{ evento.acao }}</td>
+          <td>{{ evento.entidade or "-" }} {{ evento.entidade_id or "" }}</td>
+          <td>{{ evento.ip or "-" }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5">Nenhum evento registrado.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>

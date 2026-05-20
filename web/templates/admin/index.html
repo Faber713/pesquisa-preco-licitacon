@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% set page_title = "Admin" %}
+
+{% block content %}
+  <section class="panel">
+    <div class="panel-header">
+      <div>
+        <p class="eyebrow">Governanca</p>
+        <h2>Painel administrativo</h2>
+      </div>
+      <span class="tag">{{ usuarios_total }} usuario(s)</span>
+    </div>
+
+    <div class="grid">
+      <a class="metric metric-link" href="{{ url_for('admin.usuarios') }}">
+        <span>Usuarios</span>
+        <strong>Gerenciar</strong>
+      </a>
+      <a class="metric metric-link" href="{{ url_for('admin.auditoria') }}">
+        <span>Auditoria</span>
+        <strong>Eventos</strong>
+      </a>
+      <div class="metric">
+        <span>Configuracoes</span>
+        <strong>Preparado</strong>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel panel-spaced">
+    <div class="panel-header">
+      <div>
+        <p class="eyebrow">Recentes</p>
+        <h2>Ultimos eventos</h2>
+      </div>
+    </div>
+    {% include "admin/partials/auditoria_table.html" with context %}
+  </section>
+{% endblock %}
