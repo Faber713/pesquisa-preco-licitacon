@@ -1,21 +1,18 @@
 {% extends "base.html" %}
 
-{% set page_title = "Nova interface web" %}
+{% set page_title = "Minhas cotacoes" %}
 
 {% block content %}
   <section class="panel">
     <div class="panel-header">
       <div>
-        <p class="eyebrow">Fundacao Flask</p>
-        <h2>Camada web inicial ativa</h2>
+        <p class="eyebrow">Ambiente operacional</p>
+        <h2>Pesquisa continua de precos</h2>
       </div>
-      <span class="tag">MVP</span>
+      <a class="primary-button slim" href="{{ url_for('cotacoes.listar') }}">Abrir cotacoes</a>
     </div>
 
-    <p>
-      Esta interface Flask esta coexistindo com o Streamlit enquanto as telas sao
-      migradas gradualmente para uma aplicacao web tradicional.
-    </p>
+    <p>Crie uma cotacao, importe os itens e continue o trabalho depois sem perder progresso.</p>
 
     <div class="grid">
       <article class="metric">
@@ -36,4 +33,3 @@
     </div>
   </section>
 {% endblock %}
-

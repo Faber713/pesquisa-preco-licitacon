@@ -122,6 +122,40 @@ def inicializar_app_db():
                 consulta_json TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS evidencias (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pesquisa_id INTEGER,
+                item_uid TEXT,
+                resultado_id TEXT,
+                url TEXT,
+                titulo TEXT,
+                preco TEXT,
+                fonte TEXT,
+                caminho_metadata TEXT,
+                caminho_html TEXT,
+                caminho_screenshot TEXT,
+                data_captura TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS relatorios_gerados (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pesquisa_id INTEGER,
+                tipo TEXT NOT NULL,
+                caminho TEXT,
+                contexto_json TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS logs_tecnicos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pesquisa_id INTEGER,
+                categoria TEXT NOT NULL,
+                mensagem TEXT NOT NULL,
+                dados_json TEXT,
+                created_at TEXT NOT NULL
+            );
             """
         )
         _migrar_schema_app(con)
@@ -143,14 +177,234 @@ def _migrar_schema_app(con):
     _adicionar_coluna(con, "pesquisas", "metodologia", "TEXT")
     _adicionar_coluna(con, "pesquisas", "resultado_json", "TEXT")
     _adicionar_coluna(con, "pesquisas", "created_at", "TEXT")
+    _adicionar_coluna(con, "cotacoes", "nome", "TEXT")
+    _adicionar_coluna(con, "cotacoes", "categoria", "TEXT")
+    _adicionar_coluna(con, "cotacoes", "usuario_id", "INTEGER")
+    _adicionar_coluna(con, "cotacoes", "atualizado_em", "TEXT")
+    _adicionar_coluna(con, "cotacoes", "workspace_json", "TEXT")
+    _adicionar_coluna(con, "cotacoes", "item_atual_uid", "TEXT")
+    _adicionar_coluna(con, "cotacoes", "tipo", "TEXT")
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS cotacao_itens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cotacao_id INTEGER NOT NULL,
+            item_uid TEXT,
+            descricao TEXT NOT NULL,
+            quantidade REAL,
+            unidade TEXT,
+            status TEXT NOT NULL DEFAULT 'nao_pesquisado',
+            item_ordem INTEGER,
+            dados_json TEXT,
+            resultados_json TEXT,
+            criado_em TEXT NOT NULL,
+            atualizado_em TEXT NOT NULL,
+            FOREIGN KEY (cotacao_id) REFERENCES cotacoes(id)
+        )
+        """
+    )
     agora = agora_iso()
     con.execute("UPDATE usuarios SET created_at = COALESCE(created_at, criado_em, ?)", (agora,))
     con.execute("UPDATE pesquisas SET created_at = COALESCE(created_at, criado_em, ?)", (agora,))
+    con.execute("UPDATE cotacoes SET atualizado_em = COALESCE(atualizado_em, criado_em, ?)", (agora,))
+    con.execute("UPDATE cotacoes SET tipo = COALESCE(tipo, 'fornecedor')")
     con.commit()
 
 
 def _json_dumps(valor):
     return json.dumps(valor or {}, ensure_ascii=False, default=str)
+
+
+def _json_loads(texto, padrao=None):
+    if not texto:
+        return padrao if padrao is not None else {}
+    try:
+        return json.loads(texto)
+    except (TypeError, ValueError):
+        return padrao if padrao is not None else {}
+
+
+def criar_cotacao_operacional(nome, categoria="", usuario_id=None):
+    agora = agora_iso()
+    nome = (nome or "").strip() or "Nova cotacao"
+    with conectar_app_db() as con:
+        cur = con.execute(
+            """
+            INSERT INTO cotacoes
+            (nome, categoria, usuario_id, item_pesquisado, status, criado_em,
+             atualizado_em, tipo, workspace_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                nome,
+                (categoria or "").strip(),
+                usuario_id,
+                nome,
+                "nao_iniciada",
+                agora,
+                agora,
+                "operacional",
+                _json_dumps({"itens": [], "fontes": ["licitacon"], "config": {}, "criado_em": agora}),
+            ),
+        )
+        return cur.lastrowid
+
+
+def listar_cotacoes_operacionais(usuario_id=None, limite=100):
+    with conectar_app_db() as con:
+        params = []
+        sql = """
+            SELECT c.*,
+                   COUNT(i.id) AS total_itens,
+                   SUM(CASE WHEN i.status = 'concluido' THEN 1 ELSE 0 END) AS itens_concluidos,
+                   SUM(CASE WHEN i.status = 'em_analise' THEN 1 ELSE 0 END) AS itens_em_analise
+            FROM cotacoes c
+            LEFT JOIN cotacao_itens i ON i.cotacao_id = c.id
+            WHERE COALESCE(c.tipo, '') = 'operacional'
+        """
+        if usuario_id:
+            sql += " AND c.usuario_id = ?"
+            params.append(usuario_id)
+        sql += " GROUP BY c.id ORDER BY COALESCE(c.atualizado_em, c.criado_em) DESC LIMIT ?"
+        params.append(int(limite))
+        cotacoes = []
+        for row in con.execute(sql, params).fetchall():
+            item = dict(row)
+            total = int(item.get("total_itens") or 0)
+            concluidos = int(item.get("itens_concluidos") or 0)
+            item["progresso_percentual"] = round((concluidos / total * 100), 1) if total else 0
+            cotacoes.append(item)
+        return cotacoes
+
+
+def obter_cotacao_operacional(cotacao_id, usuario_id=None):
+    with conectar_app_db() as con:
+        params = [cotacao_id]
+        sql = "SELECT * FROM cotacoes WHERE id = ? AND COALESCE(tipo, '') = 'operacional'"
+        if usuario_id:
+            sql += " AND usuario_id = ?"
+            params.append(usuario_id)
+        row = con.execute(sql, params).fetchone()
+        if not row:
+            return None
+        cotacao = dict(row)
+        cotacao["workspace"] = _json_loads(cotacao.get("workspace_json"), {"itens": [], "fontes": ["licitacon"], "config": {}})
+        cotacao["itens"] = [
+            dict(item)
+            for item in con.execute(
+                "SELECT * FROM cotacao_itens WHERE cotacao_id = ? ORDER BY item_ordem, id",
+                (cotacao_id,),
+            ).fetchall()
+        ]
+        return cotacao
+
+
+def salvar_workspace_cotacao(cotacao_id, workspace, item_atual_uid="", usuario_id=None):
+    agora = agora_iso()
+    itens = list((workspace or {}).get("itens") or [])
+    status_cotacao = "nao_iniciada"
+    if itens:
+        if all((item.get("status_operacional") == "validado" or item.get("status_operacional") == "concluido") for item in itens):
+            status_cotacao = "finalizada"
+        else:
+            status_cotacao = "em_andamento"
+    with conectar_app_db() as con:
+        params = [
+            status_cotacao,
+            agora,
+            _json_dumps(workspace),
+            item_atual_uid or "",
+            cotacao_id,
+        ]
+        sql = """
+            UPDATE cotacoes
+            SET status = ?, atualizado_em = ?, workspace_json = ?, item_atual_uid = ?
+            WHERE id = ? AND COALESCE(tipo, '') = 'operacional'
+        """
+        if usuario_id:
+            sql += " AND usuario_id = ?"
+            params.append(usuario_id)
+        cur = con.execute(sql, params)
+        if cur.rowcount == 0:
+            return False
+        con.execute("DELETE FROM cotacao_itens WHERE cotacao_id = ?", (cotacao_id,))
+        for ordem, item in enumerate(itens, start=1):
+            status_item = item.get("status_operacional") or "nao_pesquisado"
+            if status_item == "validado":
+                status_item = "concluido"
+            elif status_item == "em_analise":
+                status_item = "em_analise"
+            else:
+                status_item = "nao_pesquisado"
+            con.execute(
+                """
+                INSERT INTO cotacao_itens
+                (cotacao_id, item_uid, descricao, quantidade, unidade, status, item_ordem,
+                 dados_json, resultados_json, criado_em, atualizado_em)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    cotacao_id,
+                    item.get("item_uid", ""),
+                    item.get("descricao_original") or item.get("descricao") or "",
+                    item.get("quantidade") or 0,
+                    item.get("unidade") or "UN",
+                    status_item,
+                    ordem,
+                    _json_dumps(item),
+                    _json_dumps(item.get("resultados") or []),
+                    item.get("criado_em") or agora,
+                    agora,
+                ),
+            )
+        return True
+
+
+def atualizar_cotacao_operacional(cotacao_id, nome, categoria="", usuario_id=None):
+    nome = (nome or "").strip()
+    if not nome:
+        return False
+    with conectar_app_db() as con:
+        params = [nome, (categoria or "").strip(), agora_iso(), cotacao_id]
+        sql = """
+            UPDATE cotacoes
+            SET nome = ?, item_pesquisado = ?, categoria = ?, atualizado_em = ?
+            WHERE id = ? AND COALESCE(tipo, '') = 'operacional'
+        """
+        params.insert(1, nome)
+        if usuario_id:
+            sql += " AND usuario_id = ?"
+            params.append(usuario_id)
+        cur = con.execute(sql, params)
+        return cur.rowcount > 0
+
+
+def excluir_cotacao_operacional(cotacao_id, usuario_id=None):
+    with conectar_app_db() as con:
+        params = [cotacao_id]
+        sql = "SELECT id FROM cotacoes WHERE id = ? AND COALESCE(tipo, '') = 'operacional'"
+        if usuario_id:
+            sql += " AND usuario_id = ?"
+            params.append(usuario_id)
+        row = con.execute(sql, params).fetchone()
+        if not row:
+            return False
+        con.execute("DELETE FROM cotacao_itens WHERE cotacao_id = ?", (cotacao_id,))
+        con.execute("DELETE FROM cotacoes WHERE id = ? AND COALESCE(tipo, '') = 'operacional'", (cotacao_id,))
+        return True
+
+
+def atualizar_status_cotacao(cotacao_id, status, usuario_id=None):
+    if status not in {"nao_iniciada", "em_andamento", "finalizada"}:
+        return
+    with conectar_app_db() as con:
+        params = [status, agora_iso(), cotacao_id]
+        sql = "UPDATE cotacoes SET status = ?, atualizado_em = ? WHERE id = ? AND COALESCE(tipo, '') = 'operacional'"
+        if usuario_id:
+            sql += " AND usuario_id = ?"
+            params.append(usuario_id)
+        cur = con.execute(sql, params)
+        return cur.rowcount > 0
 
 
 def cadastrar_fornecedor(dados):
@@ -339,6 +593,45 @@ def registrar_auditoria(usuario_id, acao, entidade="", entidade_id="", dados=Non
                 ip or "",
                 agora_iso(),
             ),
+        )
+
+
+def registrar_evidencia_web(dados):
+    with conectar_app_db() as con:
+        cur = con.execute(
+            """
+            INSERT INTO evidencias
+            (pesquisa_id, item_uid, resultado_id, url, titulo, preco, fonte,
+             caminho_metadata, caminho_html, caminho_screenshot, data_captura, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                dados.get("pesquisa_id"),
+                dados.get("item_uid", ""),
+                dados.get("resultado_id", ""),
+                dados.get("url", ""),
+                dados.get("titulo", ""),
+                dados.get("preco", ""),
+                dados.get("fonte", ""),
+                dados.get("caminho_metadata", ""),
+                dados.get("caminho_html", ""),
+                dados.get("caminho_screenshot", ""),
+                dados.get("data_captura") or agora_iso(),
+                agora_iso(),
+            ),
+        )
+        return cur.lastrowid
+
+
+def registrar_log_tecnico(categoria, mensagem, dados=None, pesquisa_id=None):
+    with conectar_app_db() as con:
+        con.execute(
+            """
+            INSERT INTO logs_tecnicos
+            (pesquisa_id, categoria, mensagem, dados_json, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (pesquisa_id, categoria, mensagem, _json_dumps(dados), agora_iso()),
         )
 
 

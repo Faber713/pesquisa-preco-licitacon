@@ -225,7 +225,7 @@ def _registrar_resultado_busca(
         "caminho": str(caminho),
         "fallback": fallback,
     }
-    logger.info(
+    logger.debug(
         "SQLite search strategy=%s candidates=%s time_ms=%s detail=%s",
         estrategia,
         candidatos,
@@ -687,7 +687,7 @@ def carregar_candidatos_sqlite(
             if candidatos_fts is not None and not candidatos_fts.empty:
                 return candidatos_fts
             if candidatos_fts is not None:
-                logger.info("FTS5 sem candidatos; usando fallback LIKE.")
+                logger.debug("FTS5 sem candidatos; usando fallback LIKE.")
         except Exception as erro:
             logger.warning("Falha na busca FTS5; usando fallback LIKE: %s", erro)
 

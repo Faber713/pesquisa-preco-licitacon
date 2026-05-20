@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import time
+from copy import deepcopy
 
 from openai import OpenAI
 
@@ -10,10 +11,12 @@ from config.app_settings import MODELO_IA, PALAVRAS_FRACAS
 from config.runtime_settings import DEBUG_IA, OPENAI_DISABLE_MINUTES
 from ia.ia_cache import obter_cache_ia, salvar_cache_ia
 from utils.util import normalizar
+from search.intelligence import enriquecer_criterios_contextuais
 
 
 logger = logging.getLogger("ia")
 _OPENAI_DESABILITADO_ATE = 0
+_CRITERIOS_MEM_CACHE = {}
 
 
 def _tokens_aproximados(texto):
@@ -46,9 +49,15 @@ def _desativar_openai_temporariamente(motivo):
 def gerar_descricao_sugerida_local(descricao):
     texto = normalizar(descricao)
     palavras = texto.split()
+    ruido_descritivo = {
+        "confeccionado", "confeccionada", "fabricado", "fabricada",
+        "tamanho", "tam", "tipo", "modelo", "com", "para", "uso",
+    }
     manter = []
 
     for p in palavras:
+        if p in ruido_descritivo:
+            continue
         if p in {"rele", "rele", "fase", "fases", "falta", "neutro", "trifasica", "trifasico"}:
             manter.append(p)
         elif re.match(r"^\d+v$", p):
@@ -57,6 +66,20 @@ def gerar_descricao_sugerida_local(descricao):
             manter.append(p)
 
     manter = list(dict.fromkeys(manter))
+
+    extras_criticos = []
+    for match in re.finditer(r"\b(?:n|no|num|numero|nº)\s*\.?\s*(\d+[a-z]?)\b", texto):
+        extras_criticos.extend(["n", match.group(1)])
+    for match in re.finditer(r"\b\d+(?:[,.]\d+)?\s*(?:mm|cm|m|pol|awg)\b", texto):
+        extras_criticos.append(match.group(0).replace(" ", ""))
+    if "pincel" in palavras and "pelo" in palavras and "boi" in palavras:
+        for termo in ["pincel", "chato", "pelo", "boi"]:
+            if termo in palavras and termo not in manter:
+                manter.append(termo)
+    for termo in extras_criticos:
+        termo = normalizar(termo)
+        if termo and termo not in manter:
+            manter.append(termo)
 
     if "rele" in manter and "falta" in manter and "fase" in manter:
         base = ["rele", "falta", "fase"]
@@ -67,7 +90,7 @@ def gerar_descricao_sugerida_local(descricao):
         return " ".join(base)
 
     if len(manter) >= 2:
-        return " ".join(manter[:5])
+        return " ".join(manter[:7])
 
     return descricao
 
@@ -78,10 +101,18 @@ def extrair_criterios_simples(descricao):
     termos = []
 
     for p in palavras:
+        if p in {"confeccionado", "confeccionada", "fabricado", "fabricada", "tamanho", "tam", "tipo", "modelo"}:
+            continue
         if len(p) >= 4 and p not in PALAVRAS_FRACAS:
             termos.append(p)
 
     termos = list(dict.fromkeys(termos))
+    for termo in re.findall(r"\b(?:n|no|num|numero|nº)\s*\.?\s*(\d+[a-z]?)\b", texto):
+        termos.append(f"n {termo}")
+    if "pincel" in palavras and "pelo" in palavras and "boi" in palavras:
+        termos.append("pelo boi")
+        termos.append("n 0" if "0" in palavras else "")
+    termos = [termo for termo in list(dict.fromkeys(termos)) if termo]
     frase_principal = " ".join(termos[:2]) if len(termos) >= 2 else " ".join(termos[:1])
     descricao_sugerida = gerar_descricao_sugerida_local(descricao)
 
@@ -90,14 +121,16 @@ def extrair_criterios_simples(descricao):
         obrigatorios.append(frase_principal)
     obrigatorios += termos[:4]
 
-    return {
+    criterios = {
         "termos_obrigatorios": list(dict.fromkeys(obrigatorios))[:8],
         "termos_importantes": termos[4:20],
         "termos_excluir": [],
+        "termos_proibidos": [],
         "frases_chave": [frase_principal] if frase_principal else [],
         "descricao_resumida": descricao,
         "descricao_sugerida_licitacon": descricao_sugerida,
     }
+    return enriquecer_criterios_contextuais(descricao, criterios)
 
 
 def _validar_descricao_sugerida(descricao, descricao_sugerida):
@@ -118,6 +151,11 @@ def _validar_descricao_sugerida(descricao, descricao_sugerida):
 
 def extrair_criterios_com_ia(descricao):
     inicio_total = time.perf_counter()
+    chave_memoria = normalizar(descricao)
+    if chave_memoria in _CRITERIOS_MEM_CACHE:
+        logger.debug("IA memoria_cache_hit descricao=%r", descricao)
+        return deepcopy(_CRITERIOS_MEM_CACHE[chave_memoria])
+
     try:
         cached = obter_cache_ia(descricao)
     except Exception as erro:
@@ -125,7 +163,7 @@ def extrair_criterios_com_ia(descricao):
         logger.warning("IA cache indisponivel descricao=%r erro=%s", descricao, erro)
 
     if cached is not None:
-        logger.info(
+        logger.debug(
             "IA cache_hit descricao=%r modelo=%s tempo_ms=%s tokens_aprox=%s custo_estimado=%s",
             descricao,
             MODELO_IA,
@@ -133,18 +171,24 @@ def extrair_criterios_com_ia(descricao):
             _tokens_aproximados(descricao),
             0,
         )
-        return cached
+        resultado_cache = enriquecer_criterios_contextuais(descricao, cached)
+        _CRITERIOS_MEM_CACHE[chave_memoria] = deepcopy(resultado_cache)
+        return deepcopy(resultado_cache)
 
-    logger.info("IA cache_miss descricao=%r modelo=%s", descricao, MODELO_IA)
+    logger.debug("IA cache_miss descricao=%r modelo=%s", descricao, MODELO_IA)
 
     if openai_temporariamente_desativada():
-        logger.info("IA fallback_local descricao=%r motivo=openai_desativada", descricao)
-        return extrair_criterios_simples(descricao)
+        logger.debug("IA fallback_local descricao=%r motivo=openai_desativada", descricao)
+        resultado_local = extrair_criterios_simples(descricao)
+        _CRITERIOS_MEM_CACHE[chave_memoria] = deepcopy(resultado_local)
+        return deepcopy(resultado_local)
 
     chave = os.getenv("OPENAI_API_KEY")
     if not chave:
-        logger.info("IA fallback_local descricao=%r motivo=sem_openai_api_key", descricao)
-        return extrair_criterios_simples(descricao)
+        logger.debug("IA fallback_local descricao=%r motivo=sem_openai_api_key", descricao)
+        resultado_local = extrair_criterios_simples(descricao)
+        _CRITERIOS_MEM_CACHE[chave_memoria] = deepcopy(resultado_local)
+        return deepcopy(resultado_local)
 
     client = OpenAI(api_key=chave)
     prompt = f"""
@@ -158,10 +202,18 @@ Descricao:
 Formato obrigatorio:
 
 {{
+  "categoria": "",
+  "nucleo_tecnico": "",
+  "medidas": [],
+  "materiais": [],
+  "unidade": "",
+  "aplicacoes": [],
   "termos_obrigatorios": [],
   "termos_importantes": [],
   "termos_excluir": [],
+  "termos_proibidos": [],
   "frases_chave": [],
+  "quantidade_desejada": "",
   "descricao_resumida": "",
   "descricao_sugerida_licitacon": ""
 }}
@@ -206,20 +258,29 @@ Regras:
             dados.get("descricao_sugerida_licitacon", "").strip(),
         )
         resultado = {
+            "categoria": dados.get("categoria", ""),
+            "nucleo_tecnico": dados.get("nucleo_tecnico", ""),
+            "medidas": dados.get("medidas", []),
+            "materiais": dados.get("materiais", []),
+            "unidade": dados.get("unidade", ""),
+            "aplicacoes": dados.get("aplicacoes", []),
             "termos_obrigatorios": dados.get("termos_obrigatorios", []),
             "termos_importantes": dados.get("termos_importantes", []),
             "termos_excluir": dados.get("termos_excluir", []),
+            "termos_proibidos": dados.get("termos_proibidos", []),
             "frases_chave": dados.get("frases_chave", []),
+            "quantidade_desejada": dados.get("quantidade_desejada", ""),
             "descricao_resumida": dados.get("descricao_resumida", descricao),
             "descricao_sugerida_licitacon": descricao_sugerida,
         }
+        resultado = enriquecer_criterios_contextuais(descricao, resultado)
 
         try:
             salvar_cache_ia(descricao, resultado)
         except Exception as erro:
             logger.warning("Falha ao gravar cache IA descricao=%r erro=%s", descricao, erro)
 
-        logger.info(
+        logger.debug(
             "IA chamada_ok descricao=%r modelo=%s tempo_ia_ms=%s tempo_total_ms=%s tokens_aprox=%s custo_estimado=%s",
             descricao,
             MODELO_IA,
@@ -230,7 +291,8 @@ Regras:
         )
         if DEBUG_IA:
             logger.debug("IA resultado descricao=%r resultado=%s", descricao, resultado)
-        return resultado
+        _CRITERIOS_MEM_CACHE[chave_memoria] = deepcopy(resultado)
+        return deepcopy(resultado)
 
     except Exception as erro:
         mensagem = str(erro).lower()
@@ -243,4 +305,6 @@ Regras:
             erro,
             round((time.perf_counter() - inicio_total) * 1000, 2),
         )
-        return extrair_criterios_simples(descricao)
+        resultado_local = extrair_criterios_simples(descricao)
+        _CRITERIOS_MEM_CACHE[chave_memoria] = deepcopy(resultado_local)
+        return deepcopy(resultado_local)

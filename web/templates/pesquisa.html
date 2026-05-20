@@ -132,9 +132,20 @@
         <div><strong>{{ estatisticas.rigido }}</strong><span>Rígidos</span></div>
         <div><strong>{{ estatisticas.relaxado }}</strong><span>Relaxados</span></div>
         <div><strong>{{ estatisticas.amplo }}</strong><span>Amplos</span></div>
+        <div><strong>{{ estatisticas.validos or 0 }}</strong><span>Compatíveis</span></div>
+        <div><strong>{{ estatisticas.suspeitos or 0 }}</strong><span>Suspeitos</span></div>
         <div><strong>{{ estatisticas.filtrados_periodo or 0 }}</strong><span>Fora do periodo</span></div>
         <div><strong>{{ estatisticas.filtrados_orgao_origem or 0 }}</strong><span>Orgao origem filtrado</span></div>
       </div>
+      {% if estatisticas.precos %}
+        <p class="search-diagnostics">
+          Media {{ estatisticas.precos.media|moeda_br }} · Mediana {{ estatisticas.precos.mediana|moeda_br }}
+          · CV {{ estatisticas.precos.coeficiente_variacao or 0 }}%
+        </p>
+      {% endif %}
+      {% if estatisticas.justificativa_automatica %}
+        <p class="search-diagnostics">{{ estatisticas.justificativa_automatica }}</p>
+      {% endif %}
       {% if estatisticas.sqlite_search %}
         <p class="search-diagnostics">
           SQLite: {{ estatisticas.sqlite_search.banco|upper }}
@@ -158,6 +169,7 @@
           </div>
           <div class="result-body">
             <div class="result-meta">
+              <span class="validation-badge validation-{{ (r.status_validacao or 'VALIDO')|lower|replace('_', '-')|replace(' ', '-') }}">{{ r.status_validacao or "VALIDO" }}</span>
               <span>{{ r.orgao or "Órgão não informado" }}</span>
               <span>{{ r.modalidade or "-" }}</span>
               <span>{{ r.ano or "-" }}</span>
@@ -168,6 +180,9 @@
               {% endif %}
             </div>
             <h3>{{ r.descricao }}</h3>
+            {% if r.motivos_alerta %}
+              <p class="result-warning">{{ r.motivos_alerta }}</p>
+            {% endif %}
             <dl class="result-grid">
               <div>
                 <dt>Valor unitário</dt>
@@ -197,6 +212,11 @@
                 <input type="hidden" name="valor_unitario" value="{{ r.valor_unitario or '' }}">
                 <input type="hidden" name="quantidade" value="{{ r.qtd or '' }}">
                 <input type="hidden" name="score" value="{{ r.score or '' }}">
+                <input type="hidden" name="status_validacao" value="{{ r.status_validacao or '' }}">
+                <input type="hidden" name="motivos_alerta" value="{{ r.motivos_alerta or '' }}">
+                <input type="hidden" name="categoria_detectada" value="{{ r.categoria_detectada or '' }}">
+                <input type="hidden" name="score_quantidade" value="{{ r.score_quantidade or '' }}">
+                <input type="hidden" name="fonte_prioridade" value="{{ r.fonte_prioridade or '' }}">
                 <input type="hidden" name="fonte" value="{{ r.fonte_base or 'LicitaCon RS' }}">
                 <input type="hidden" name="link_origem" value="{{ r.link_licitacon or '' }}">
                 <input type="hidden" name="modalidade" value="{{ r.modalidade or '' }}">

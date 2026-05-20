@@ -5,26 +5,57 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ title or app_name }}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+    <script>
+      if (localStorage.getItem("sidebarCollapsed") === "true") {
+        document.documentElement.classList.add("sidebar-collapsed-initial");
+      }
+    </script>
   </head>
   <body>
     <div class="app-shell">
       <aside class="sidebar">
+        <button class="sidebar-toggle" type="button" data-sidebar-toggle aria-label="Recolher menu lateral" aria-expanded="true">
+          <span class="sidebar-toggle-icon">☰</span>
+        </button>
+
         <div class="brand">
           <span class="brand-mark">P</span>
-          <div>
+          <div class="brand-text">
             <strong>Pesquisa</strong>
             <small>Precos publicos</small>
           </div>
         </div>
 
         <nav class="nav">
-          <a class="nav-link {{ 'active' if request.endpoint == 'main.index' else '' }}" href="{{ url_for('main.index') }}">Inicio</a>
-          <a class="nav-link {{ 'active' if request.endpoint == 'pesquisa.pesquisa' else '' }}" href="{{ url_for('pesquisa.pesquisa') }}">Pesquisa Individual</a>
-          <a class="nav-link {{ 'active' if request.endpoint == 'pesquisa_lote.pesquisa_lote' else '' }}" href="{{ url_for('pesquisa_lote.pesquisa_lote') }}">Pesquisa em Lote</a>
-          <a class="nav-link {{ 'active' if request.endpoint == 'dossie.dossie' else '' }}" href="{{ url_for('dossie.dossie') }}">Dossies</a>
-          <span class="nav-link disabled">Fontes</span>
+          <a class="nav-link {{ 'active' if request.endpoint == 'main.index' else '' }}" href="{{ url_for('main.index') }}" title="Inicio">
+            <span class="nav-icon" aria-hidden="true">⌂</span>
+            <span class="nav-text">Inicio</span>
+          </a>
+          <a class="nav-link {{ 'active' if request.endpoint == 'pesquisa.pesquisa' else '' }}" href="{{ url_for('pesquisa.pesquisa') }}" title="Pesquisa Individual">
+            <span class="nav-icon" aria-hidden="true">⌕</span>
+            <span class="nav-text">Pesquisa Individual</span>
+          </a>
+          <a class="nav-link {{ 'active' if request.endpoint == 'pesquisa_lote.pesquisa_lote' else '' }}" href="{{ url_for('pesquisa_lote.pesquisa_lote') }}" title="Pesquisa em Lote">
+            <span class="nav-icon" aria-hidden="true">▦</span>
+            <span class="nav-text">Pesquisa em Lote</span>
+          </a>
+          <a class="nav-link {{ 'active' if request.endpoint and request.endpoint.startswith('cotacoes.') else '' }}" href="{{ url_for('cotacoes.listar') }}" title="Cotações">
+            <span class="nav-icon" aria-hidden="true">□</span>
+            <span class="nav-text">Cotações</span>
+          </a>
+          <a class="nav-link {{ 'active' if request.endpoint == 'dossie.dossie' else '' }}" href="{{ url_for('dossie.dossie') }}" title="Dossies">
+            <span class="nav-icon" aria-hidden="true">▤</span>
+            <span class="nav-text">Dossies</span>
+          </a>
+          <span class="nav-link disabled" title="Fontes">
+            <span class="nav-icon" aria-hidden="true">◇</span>
+            <span class="nav-text">Fontes</span>
+          </span>
           {% if usuario_logado and usuario_logado.perfil == "admin" %}
-            <a class="nav-link {{ 'active' if request.endpoint and request.endpoint.startswith('admin.') else '' }}" href="{{ url_for('admin.painel') }}">Admin</a>
+            <a class="nav-link {{ 'active' if request.endpoint and request.endpoint.startswith('admin.') else '' }}" href="{{ url_for('admin.painel') }}" title="Admin">
+              <span class="nav-icon" aria-hidden="true">⚙</span>
+              <span class="nav-text">Admin</span>
+            </a>
           {% endif %}
         </nav>
       </aside>
@@ -62,5 +93,6 @@
     <script src="{{ url_for('static', filename='js/cesta.js') }}"></script>
     <script src="{{ url_for('static', filename='js/filtros.js') }}"></script>
     <script src="{{ url_for('static', filename='js/api.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/sidebar.js') }}"></script>
   </body>
 </html>

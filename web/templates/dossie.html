@@ -282,6 +282,7 @@
             {% endfor %}
           </tbody>
         </table>
+        <p>{{ justificativa_automatica }}</p>
       </section>
 
       <section>
@@ -307,6 +308,14 @@
                 <div class="metric"><span>Maior</span><strong>{{ item.resumo.maior|moeda_br }}</strong></div>
                 <div class="metric"><span>Considerados</span><strong>{{ item.considerados_qtd }}</strong></div>
               </div>
+              <div class="metrics">
+                <div class="metric"><span>Desvio padrao</span><strong>{{ item.resumo.desvio_padrao|moeda_br }}</strong></div>
+                <div class="metric"><span>Coef. variacao</span><strong>{{ item.resumo.coeficiente_variacao or 0 }}%</strong></div>
+                <div class="metric"><span>Fontes</span><strong>{{ item.total_precos }}</strong></div>
+                <div class="metric"><span>Alertas</span><strong>{{ item.precos_considerados|selectattr("motivos_alerta")|list|length }}</strong></div>
+                <div class="metric"><span>Anexos web</span><strong>{{ item.evidencias|length }}</strong></div>
+              </div>
+              <p>{{ item.justificativa_automatica }}</p>
 
               <h3>Precos Considerados</h3>
               <table>
@@ -319,6 +328,7 @@
                     <th>Ano</th>
                     <th>Modalidade</th>
                     <th>Score</th>
+                    <th>Validacao</th>
                     <th>Fonte</th>
                   </tr>
                 </thead>
@@ -332,6 +342,7 @@
                       <td>{{ preco.ano or "-" }}</td>
                       <td>{{ preco.modalidade or "-" }}</td>
                       <td>{{ (preco.score|percentual) ~ "%" if preco.score else "-" }}</td>
+                      <td>{{ preco.status_validacao or "VALIDO" }}{% if preco.motivos_alerta %}<br>{{ preco.motivos_alerta }}{% endif %}</td>
                       <td>
                         {% if preco.link_origem %}
                           <a class="source-link" href="{{ preco.link_origem }}" target="_blank" rel="noopener">{{ preco.fonte or "LicitaCon RS" }}</a>
@@ -341,7 +352,7 @@
                       </td>
                     </tr>
                   {% else %}
-                    <tr><td colspan="8">Nenhum preco considerado.</td></tr>
+                    <tr><td colspan="9">Nenhum preco considerado.</td></tr>
                   {% endfor %}
                 </tbody>
               </table>
@@ -364,6 +375,26 @@
                         <td>{{ preco.fornecedor or "-" }}</td>
                         <td>{{ preco.valor_unitario|moeda_br }}</td>
                         <td>{{ preco.justificativa or "Preco desconsiderado tecnicamente." }}</td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              {% endif %}
+
+              {% if item.evidencias %}
+                <h3>Anexos Web</h3>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Evidencia</th>
+                      <th>Arquivo</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for evidencia in item.evidencias %}
+                      <tr>
+                        <td>Anexo auditavel de preco em dominio amplo</td>
+                        <td>{{ evidencia }}</td>
                       </tr>
                     {% endfor %}
                   </tbody>

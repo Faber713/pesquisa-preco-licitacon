@@ -20,6 +20,9 @@ storage/cache/
 storage/temp/
 storage/logs/
 storage/debug/
+storage/workspaces/
+storage/screenshots/*
+!storage/screenshots/README.md
 
 *.log
 

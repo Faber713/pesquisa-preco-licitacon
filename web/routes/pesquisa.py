@@ -12,13 +12,14 @@ from web.services.filtros_service import (
     preparar_resultados,
 )
 from web.services.pesquisa_service import executar_pesquisa_item
+from search.sources import normalizar_fontes
 
 
 pesquisa_bp = Blueprint("pesquisa", __name__, url_prefix="/pesquisa")
 
 
 def _executar_pesquisa_sqlite(descricao, qtd_min, qtd_max):
-    fontes = request.form.getlist("fontes") or ["licitacon"]
+    fontes = normalizar_fontes(request.form.getlist("fontes") or ["licitacon"])
     return executar_pesquisa_item(
         descricao,
         qtd_min,
@@ -68,7 +69,7 @@ def pesquisa():
     data_inicial_txt = request.form.get("data_inicial", "").strip()
     data_final_txt = request.form.get("data_final", "").strip()
     resultados_max_txt = request.form.get("resultados_max", "50").strip()
-    fontes = request.form.getlist("fontes") or ["licitacon"]
+    fontes = normalizar_fontes(request.form.getlist("fontes") or ["licitacon"])
     contexto["form"] = {
         "descricao": descricao,
         "qtd_min": qtd_min_txt,

@@ -7,6 +7,7 @@ from auth.session_manager import usuario_atual
 from storage.app_storage import registrar_auditoria, salvar_pesquisa_usuario
 from utils.util import converter_numero
 from web.routes.pesquisa_lote import (
+    _enriquecer_item_importado,
     parse_linhas_lote,
     parse_planilha_lote,
     _limite_resultados,
@@ -19,6 +20,7 @@ from web.services.filtros_service import (
     preparar_resultados,
 )
 from web.services.pesquisa_service import executar_pesquisa_item
+from search.sources import normalizar_fontes
 
 
 pesquisa_api_bp = Blueprint("pesquisa_api", __name__, url_prefix="/api")
@@ -36,7 +38,7 @@ def _executar(descricao, qtd_min, qtd_max):
         fontes = data.get("fontes") if hasattr(data, "get") else None
     if isinstance(fontes, str):
         fontes = [fontes]
-    fontes = fontes or ["licitacon"]
+    fontes = normalizar_fontes(fontes or ["licitacon"])
     return executar_pesquisa_item(
         descricao,
         qtd_min,
@@ -137,54 +139,21 @@ def pesquisa():
 def lote():
     data = _payload()
     texto_lote = str(data.get("itens_lote", "") or "")
-    quantidade_resultados = _limite_resultados(data.get("quantidade_resultados", 8))
     if texto_lote.strip():
         itens, erros = parse_linhas_lote(texto_lote)
     else:
         itens, erros, _, _ = parse_planilha_lote(request.form)
 
     inicio_lote = time.perf_counter()
-    resultados_lote = []
-    for item in itens:
-        inicio_item = time.perf_counter()
-        try:
-            criterios, resultados, estatisticas = _executar(
-                item["descricao"],
-                item["qtd_min"],
-                item["qtd_max"],
-            )
-            resultados, removidos_periodo, removidos_orgao = _aplicar_filtros(resultados, data)
-            resultados = preparar_resultados(resultados, item["item_uid"])
-            estatisticas["filtrados_orgao_origem"] = removidos_orgao
-            estatisticas["filtrados_periodo"] = removidos_periodo
-            estatisticas["total_exibido"] = len(resultados)
-            resultados_lote.append({
-                "item": item,
-                "criterios": criterios,
-                "resultados": resultados[:quantidade_resultados],
-                "estatisticas": estatisticas,
-                "tempo_item_ms": round((time.perf_counter() - inicio_item) * 1000, 2),
-                "erro": "",
-            })
-        except Exception as erro:
-            resultados_lote.append({
-                "item": item,
-                "criterios": None,
-                "resultados": [],
-                "estatisticas": None,
-                "tempo_item_ms": round((time.perf_counter() - inicio_item) * 1000, 2),
-                "erro": str(erro),
-            })
-
-    sucesso = sum(1 for bloco in resultados_lote if not bloco["erro"])
+    itens_importados = [_enriquecer_item_importado(item) for item in itens]
     return jsonify({
         "ok": True,
         "erros": erros,
-        "resultados_lote": resultados_lote,
+        "itens": itens_importados,
         "resumo": {
             "itens_validos": len(itens),
-            "sucesso": sucesso,
-            "erros": len(erros) + (len(resultados_lote) - sucesso),
+            "sucesso": len(itens_importados),
+            "erros": len(erros),
             "tempo_total_ms": round((time.perf_counter() - inicio_lote) * 1000, 2),
         },
     })

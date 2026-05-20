@@ -7,6 +7,7 @@ from services.internet.search_client import InternetSearchClient
 
 class InternetProvider(BaseProvider):
     nome = "internet"
+    confiabilidade = 0.60
 
     def __init__(self, client=None):
         self.client = client or InternetSearchClient()

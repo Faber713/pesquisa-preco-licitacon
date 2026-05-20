@@ -11,6 +11,10 @@ class ProviderResult:
 
 class BaseProvider:
     nome = "base"
+    confiabilidade = 0.50
 
     def buscar(self, *args, **kwargs):
         raise NotImplementedError
+
+    def pesquisar(self, criterios):
+        return self.buscar(criterios)

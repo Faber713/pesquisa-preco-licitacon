@@ -7,6 +7,7 @@ from werkzeug.exceptions import HTTPException
 
 from config.logging_config import setup_logging
 from config.search_settings import carregar_search_db_config
+from storage.app_storage import inicializar_app_db
 from config.runtime_settings import (
     CACHE_FOLDER,
     DEBUG_LOGS,
@@ -24,6 +25,7 @@ from web.api.filtros_api import filtros_api_bp
 from web.api.health_api import health_api_bp
 from web.api.pesquisa_api import pesquisa_api_bp
 from web.routes.cesta import cesta_bp
+from web.routes.cotacoes import cotacoes_bp
 from web.routes.dossie import dossie_bp
 from web.routes.auth import auth_bp
 from web.routes.admin import admin_bp
@@ -40,6 +42,7 @@ errors_logger = logging.getLogger("errors")
 
 
 def create_app():
+    inicializar_app_db()
     app = Flask(
         __name__,
         template_folder="templates",
@@ -63,6 +66,7 @@ def create_app():
     app.register_blueprint(auth_bp)
     app.register_blueprint(admin_bp)
     app.register_blueprint(cesta_bp)
+    app.register_blueprint(cotacoes_bp)
     app.register_blueprint(dossie_bp)
     app.register_blueprint(pesquisa_bp)
     app.register_blueprint(pesquisa_lote_bp)

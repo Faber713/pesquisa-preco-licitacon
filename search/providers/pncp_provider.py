@@ -12,6 +12,14 @@ from config.runtime_settings import (
 from search.models import SearchResult, item_valido
 from search.providers.base_provider import BaseProvider
 from search.score import calcular_score
+from search.intelligence import (
+    calcular_score_final_inteligente,
+    quantity_similarity_score,
+    quantidade_desejada,
+    recency_score,
+    semantic_category_match,
+    source_priority_score,
+)
 from services.pncp_client import PNCPClient, PNCPClientError
 from utils.util import converter_numero, normalizar, palavras_fortes, termos_compativeis
 
@@ -60,6 +68,17 @@ def _lista_payload(payload):
 
 def calcular_score_pncp(descricao_busca, descricao_item, criterios=None):
     criterios = criterios or {}
+    categoria = semantic_category_match(descricao_busca, descricao_item, criterios)
+    if not categoria["ok"]:
+        return {
+            "score": 0,
+            "aprovado": False,
+            "motivos_descarte": [categoria["motivo"]],
+            "termos_fortes_encontrados": [],
+            "obrigatorios_encontrados": [],
+            "score_texto": 0,
+            "categoria": categoria,
+        }
     score_info = calcular_score(descricao_busca, descricao_item, criterios, modo="rigido")
     busca_norm = normalizar(descricao_busca)
     item_norm = normalizar(descricao_item)
@@ -112,11 +131,13 @@ def calcular_score_pncp(descricao_busca, descricao_item, criterios=None):
         "termos_fortes_encontrados": fortes_encontrados,
         "obrigatorios_encontrados": obrigatorios_encontrados,
         "score_texto": round(token_set, 2),
+        "categoria": categoria,
     }
 
 
 class PNCPProvider(BaseProvider):
     nome = "pncp"
+    confiabilidade = 0.95
 
     def __init__(self, client=None):
         self.client = client or PNCPClient()
@@ -266,6 +287,18 @@ class PNCPProvider(BaseProvider):
         )
         ano_ref = converter_numero(registro.get("anoCompra")) or converter_numero(str(data_ref)[:4])
         link = self._link_contratacao(registro)
+        score_quantidade = quantity_similarity_score(quantidade, quantidade_desejada(criterios=criterios))
+        score_recencia = recency_score(data_ref, ano_ref)
+        score_fonte = source_priority_score("PNCP")
+        categoria = score_info.get("categoria") or {}
+        score_final = calcular_score_final_inteligente(
+            score_textual=score_info.get("score", 0),
+            score_categoria=categoria.get("score", 80),
+            score_quantidade=score_quantidade,
+            score_tecnico=100,
+            score_recencia=score_recencia,
+            score_fonte=score_fonte,
+        )
         metadados = {
             "item_descartado": not score_info.get("aprovado"),
             "score_pncp": score_info,
@@ -281,7 +314,7 @@ class PNCPProvider(BaseProvider):
             fornecedor=fornecedor,
             orgao=orgao.get("razaoSocial", ""),
             data=data_ref,
-            score=score_info.get("score", 0),
+            score=score_final,
             url=link,
             metadados=metadados,
         ).to_dict()
@@ -307,6 +340,30 @@ class PNCPProvider(BaseProvider):
                 "modo_busca": "pncp",
                 "quantidade_fora": False,
                 "avisos_tecnicos": "PNCP score rigido",
+                "score_textual": score_info.get("score", 0),
+                "score_quantidade": score_quantidade,
+                "fonte_prioridade": score_fonte,
+                "compatibilidade_categoria": categoria,
+                "compatibility_reasons": list(categoria.get("compatibility_reasons") or []),
+                "rejection_reasons": list(categoria.get("rejection_reasons") or []),
+                "categoria_detectada": categoria.get("categoria_detectada"),
+                "score_final_componentes": {
+                    "score_textual": score_info.get("score", 0),
+                    "score_categoria": categoria.get("score", 80),
+                    "score_quantidade": score_quantidade,
+                    "score_tecnico": 100,
+                    "score_recencia": score_recencia,
+                    "score_fonte": score_fonte,
+                },
+                "score_details": {
+                    "score_textual": score_info.get("score", 0),
+                    "score_categoria": categoria.get("score", 80),
+                    "score_quantidade": score_quantidade,
+                    "score_tecnico": 100,
+                    "score_recencia": score_recencia,
+                    "score_fonte": score_fonte,
+                },
+                "compatibilidade_status": "VALIDO",
                 "item_descartado": metadados["item_descartado"],
                 "raw": metadados,
             }
@@ -363,7 +420,7 @@ class PNCPProvider(BaseProvider):
                 aprovado_pre, motivo_pre = self._pre_filtrar_item(item, descricao, criterios)
                 if not aprovado_pre:
                     stats["itens_descartados"] += 1
-                    logger.info(
+                    logger.debug(
                         "PNCP item_pre_descartado descricao_busca=%r descricao_item=%r motivo=%s",
                         descricao,
                         self._descricao_item(item),
@@ -380,7 +437,7 @@ class PNCPProvider(BaseProvider):
                 stats["itens_scorados"] += 1
                 if not score_info["aprovado"]:
                     stats["itens_descartados"] += 1
-                    logger.info(
+                    logger.debug(
                         "PNCP item_descartado descricao_busca=%r descricao_item=%r score=%s motivos=%s",
                         descricao,
                         self._descricao_item(item),
@@ -419,7 +476,7 @@ class PNCPProvider(BaseProvider):
             }
         )
         self.last_stats = stats
-        logger.info(
+        logger.debug(
             "PNCP pipeline descricao=%r contratacoes=%s contratacoes_filtradas=%s itens_total=%s itens_pre_filtrados=%s itens_scorados=%s itens_validos=%s itens_descartados=%s tempo_total_ms=%s tempo_refs_ms=%s tempo_itens_ms=%s tempo_score_ms=%s",
             descricao,
             stats["contratacoes"],
@@ -469,7 +526,7 @@ class PNCPProvider(BaseProvider):
                 criterios=criterios,
                 limite=limite,
             )
-            logger.info(
+            logger.debug(
                 "PNCP provider descricao=%r registros=%s resultados=%s tempo_ms=%s score_max=%s score_min=%s",
                 descricao,
                 len(registros),

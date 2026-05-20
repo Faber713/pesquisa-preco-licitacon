@@ -167,7 +167,7 @@ class PNCPClient:
         cache_key = self._cache_key("GET", url, params)
         cached = self._get_cache(cache_key)
         if cached is not None:
-            logger.info("PNCP cache_hit url=%s params=%s", url, params)
+            logger.debug("PNCP cache_hit url=%s params=%s", url, params)
             return cached
         if self.pncp_temporariamente_desativado():
             raise PNCPClientError("PNCP temporariamente pausado por rate limit")
@@ -210,7 +210,7 @@ class PNCPClient:
                     self._salvar_payload_debug(resposta.url, params, resposta.status_code, payload)
                     self._set_cache(cache_key, resposta.url, params, resposta.status_code, payload)
                     quantidade = len(payload.get("data", [])) if isinstance(payload, dict) else len(payload or [])
-                    logger.info(
+                    logger.debug(
                         "PNCP GET url=%s endpoint=%s params=%s status=%s quantidade=%s tempo_ms=%s retries=%s",
                         resposta.url,
                         url,

@@ -1,3 +1,6 @@
+import logging
+
+from config.runtime_settings import SEARCH_MAX_SCORE_CANDIDATES
 from config.app_settings import (
     LIMIAR_RIGIDO,
     LIMIAR_RELAXADO,
@@ -13,6 +16,41 @@ from ia.regras_tecnicas import validar_regras_tecnicas
 from ia.regras_produtos_eletricos import validar_produto_eletrico
 from utils.util import pegar_coluna, converter_numero, palavras_fortes, termos_compativeis, normalizar
 from search.score import calcular_score
+from search.intelligence import (
+    calcular_score_final_inteligente,
+    quantity_similarity_score,
+    quantidade_desejada,
+    recency_score,
+    semantic_category_match,
+    source_priority_score,
+)
+from search.critical_specs import validar_especificacao_critica
+
+
+logger = logging.getLogger("pesquisa.busca")
+
+
+def _incrementar_stats(stats, chave, valor=1):
+    if stats is not None:
+        stats[chave] = stats.get(chave, 0) + valor
+
+
+def _score_preliminar(descricao_usada, descricao_resultado, criterios, modo):
+    resultado_norm = normalizar(descricao_resultado)
+    termos = []
+    termos.extend(criterios.get("termos_obrigatorios", []) or [])
+    if modo != "rigido":
+        termos.extend(criterios.get("termos_importantes", []) or [])
+    termos = list(dict.fromkeys([normalizar(termo) for termo in termos if normalizar(termo)]))
+    if not termos:
+        fortes = palavras_fortes(descricao_usada)
+        termos = fortes[:6]
+    if not termos:
+        return 1
+    encontrados = sum(1 for termo in termos if termos_compativeis(termo, resultado_norm))
+    if encontrados == 0:
+        return 0
+    return encontrados / len(termos)
 
 
 # ============================================================
@@ -198,7 +236,8 @@ def buscar_item(
     criterios,
     modo="rigido",
     ignorar_quantidade=False,
-    exigir_homologacao=True
+    exigir_homologacao=True,
+    stats=None,
 ):
     resultados = []
 
@@ -222,25 +261,56 @@ def buscar_item(
         min_pct_obrigatorios = MIN_PCT_OBRIGATORIOS_RELAXADO
         descricao_usada = descricao_busca
 
+    pre_candidatos = []
+
     for index, row in df.iterrows():
+        _incrementar_stats(stats, "candidatos")
 
         if exigir_homologacao and not registro_tem_homologacao_valida(row):
+            _incrementar_stats(stats, "descartados")
             continue
 
         descricao = pegar_coluna(row, ["Item", "item", "ITEM", "Descrição", "Descricao"])
         if not descricao:
+            _incrementar_stats(stats, "descartados")
             continue
 
         qtd_raw = pegar_coluna(row, ["Qtd.", "Qtd", "Quantidade", "QUANTIDADE"])
         qtd = converter_numero(qtd_raw)
 
         if qtd is None:
+            _incrementar_stats(stats, "descartados")
             continue
 
         quantidade_fora = not (qtd_min <= qtd <= qtd_max)
 
-        if quantidade_fora and not ignorar_quantidade:
+        categoria = semantic_category_match(descricao_busca, descricao, criterios)
+        if not categoria["ok"]:
+            _incrementar_stats(stats, "descartados")
+            if logger.isEnabledFor(logging.DEBUG):
+                for motivo in categoria.get("rejection_reasons", []):
+                    logger.debug("[rejection_reason] motivo=%s descricao=%r", motivo, descricao)
             continue
+
+        especificacao = validar_especificacao_critica(
+            descricao_busca,
+            descricao,
+            categoria.get("categoria_detectada") or criterios.get("categoria", ""),
+        )
+
+        preliminar = _score_preliminar(descricao_usada, descricao, criterios, modo)
+        if preliminar <= 0:
+            _incrementar_stats(stats, "descartados")
+            continue
+        if not especificacao["ok"]:
+            preliminar *= 0.25
+        pre_candidatos.append((preliminar, index, row, descricao, qtd_raw, qtd, quantidade_fora, categoria, especificacao))
+
+    pre_candidatos = sorted(pre_candidatos, key=lambda item: item[0], reverse=True)
+    pre_candidatos = pre_candidatos[:max(1, SEARCH_MAX_SCORE_CANDIDATES)]
+
+    for _preliminar, index, row, descricao, qtd_raw, qtd, quantidade_fora, categoria, especificacao in pre_candidatos:
+        _incrementar_stats(stats, "score_pesado")
 
         analise = calcular_score(descricao_usada, descricao, criterios, modo=modo)
 
@@ -254,6 +324,7 @@ def buscar_item(
         )
 
         if not regras["ok"]:
+            _incrementar_stats(stats, "descartados")
             continue
 
         aderente, termos_fortes_encontrados = validar_aderencia_produto(
@@ -262,8 +333,10 @@ def buscar_item(
         )
 
         if not aderente:
+            _incrementar_stats(stats, "descartados")
             continue
 
+        score_tecnico = max(0, 100 - regras["penalidade"])
         analise["score"] = max(0, analise["score"] - regras["penalidade"])
 
         if ignorar_quantidade and quantidade_fora:
@@ -274,15 +347,62 @@ def buscar_item(
 
         if modo == "rigido":
             if analise["pct_obrigatorios"] < (min_pct_obrigatorios * 100):
+                _incrementar_stats(stats, "descartados")
                 continue
 
         if analise["score"] >= limiar:
             valor_unitario = obter_valor_unitario(row)
             valor_total = obter_valor_total(row)
             vencedor = obter_vencedor(row)
+            alvo_qtd = quantidade_desejada(qtd_min, qtd_max, criterios)
+            score_quantidade = quantity_similarity_score(qtd, alvo_qtd)
+            fonte_base = pegar_coluna(row, ["Fonte Base"]) or "LicitaCon RS"
+            data_ref = pegar_coluna(row, ["Data Homologacao"]) or pegar_coluna(row, ["Abertura"])
+            ano_ref = pegar_coluna(row, ["Ano"])
+            score_recencia = recency_score(data_ref, ano_ref)
+            score_fonte = source_priority_score(fonte_base)
+            score_final = calcular_score_final_inteligente(
+                score_textual=analise["score"],
+                score_categoria=categoria["score"],
+                score_quantidade=score_quantidade,
+                score_tecnico=score_tecnico,
+                score_recencia=score_recencia,
+                score_fonte=score_fonte,
+            )
+            alertas_preco = []
+            if not especificacao["ok"]:
+                score_final = max(0, score_final - 35)
+                alertas_preco.extend(f"SUSPEITO: {motivo}" for motivo in especificacao.get("motivos", []))
+            compatibility_reasons = list(categoria.get("compatibility_reasons") or [])
+            if termos_fortes_encontrados:
+                compatibility_reasons.append("termos fortes encontrados")
+            if score_quantidade >= 70:
+                compatibility_reasons.append("quantidade compatível")
+            if score_tecnico >= 80:
+                compatibility_reasons.append("regras técnicas compatíveis")
+            if logger.isEnabledFor(logging.DEBUG):
+                for motivo in compatibility_reasons:
+                    logger.debug("[compatibility_reason] motivo=%s descricao=%r", motivo, descricao)
+            logger_extra = {
+                "score_textual": analise["score"],
+                "score_categoria": categoria["score"],
+                "score_quantidade": score_quantidade,
+                "score_tecnico": score_tecnico,
+                "score_recencia": score_recencia,
+                "score_fonte": score_fonte,
+            }
 
             resultados.append({
-                "score": analise["score"],
+                "score": score_final,
+                "score_textual": analise["score"],
+                "score_final_componentes": logger_extra,
+                "compatibilidade_categoria": categoria,
+                "compatibility_reasons": compatibility_reasons,
+                "rejection_reasons": list(categoria.get("rejection_reasons") or []),
+                "categoria_detectada": categoria.get("categoria_detectada"),
+                "score_quantidade": score_quantidade,
+                "fonte_prioridade": score_fonte,
+                "especificacao_critica": especificacao,
                 "modo_busca": modo,
                 "linha_csv": index + 2,
                 "descricao": descricao,
@@ -303,15 +423,21 @@ def buscar_item(
                 "vencedor": vencedor,
                 "cpf_cnpj": pegar_coluna(row, ["CPF/CNPJ", "CNPJ"]),
                 "link_licitacon": pegar_coluna(row, ["Link LicitaCon", "LINK_LICITACON_CIDADAO"]),
-                "fonte_base": pegar_coluna(row, ["Fonte Base"]),
+                "fonte_base": fonte_base,
                 "municipio_fonte": pegar_coluna(row, ["Municipio Fonte"]),
                 "grupo_regional": pegar_coluna(row, ["Grupo Regional"]),
 
                 "quantidade_fora": quantidade_fora,
-                "avisos_tecnicos": " | ".join(regras["avisos"])
+                "avisos_tecnicos": " | ".join(regras["avisos"]),
+                "score_details": logger_extra,
+                "alertas_preco": alertas_preco,
+                "compatibilidade_status": "VALIDO",
             })
 
-    return sorted(resultados, key=lambda x: x["score"], reverse=True)
+    ordenados = sorted(resultados, key=lambda x: x["score"], reverse=True)
+    if stats is not None:
+        stats["resultados_finais"] = stats.get("resultados_finais", 0) + len(ordenados)
+    return ordenados
 
 
 # ============================================================

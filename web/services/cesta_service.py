@@ -4,6 +4,9 @@ import statistics
 from flask import session
 
 from utils.util import converter_numero
+from services.web_evidence import capturar_evidencia_web
+from storage.app_storage import registrar_evidencia_web
+from search.units import normalizar_unidade
 from web.services.filtros_service import gerar_item_uid
 
 
@@ -139,6 +142,7 @@ def adicionar_preco(dados):
     cesta = obter_cesta()
     item_pesquisado = dados.get("item_pesquisado", "").strip() or dados.get("descricao", "").strip()
     quantidade_item = dados.get("quantidade_item", "").strip() or dados.get("quantidade", "").strip()
+    unidade_item = normalizar_unidade(dados.get("unidade_item", "UN"))
     numero_item = dados.get("item_numero", "").strip()
     resultados_alvo = dados.get("resultados_alvo", "").strip()
     _definir_total_itens(dados.get("total_itens_cesta"))
@@ -154,6 +158,7 @@ def adicionar_preco(dados):
         "fornecedor": dados.get("fornecedor", "").strip(),
         "valor_unitario": dados.get("valor_unitario", "").strip(),
         "quantidade": dados.get("quantidade", "").strip(),
+        "unidade_item": unidade_item,
         "score": dados.get("score", "").strip(),
         "fonte": dados.get("fonte", "LicitaCon RS").strip() or "LicitaCon RS",
         "link_origem": (
@@ -166,10 +171,39 @@ def adicionar_preco(dados):
         "processo": dados.get("processo", "").strip(),
         "considerar": dados.get("considerar", "1") != "0",
         "justificativa": dados.get("justificativa", "").strip(),
+        "status_validacao": dados.get("status_validacao", "").strip(),
+        "motivos_alerta": dados.get("motivos_alerta", "").strip(),
+        "categoria_detectada": dados.get("categoria_detectada", "").strip(),
+        "score_quantidade": dados.get("score_quantidade", "").strip(),
+        "fonte_prioridade": dados.get("fonte_prioridade", "").strip(),
+        "evidencia_web": "",
     }
 
     if not item["descricao"] or _preco(item["valor_unitario"]) is None:
         return False
+
+    evidencia = capturar_evidencia_web(
+        url=item["link_origem"],
+        fonte=item["fonte"],
+        titulo=item["descricao"],
+        preco=item["valor_unitario"],
+        item_uid=item_uid,
+    )
+    if evidencia:
+        item["evidencia_web"] = evidencia.get("metadata", "")
+        dados_evidencia = evidencia.get("dados", {})
+        registrar_evidencia_web({
+            "item_uid": item_uid,
+            "resultado_id": item["id"],
+            "url": dados_evidencia.get("url", ""),
+            "titulo": dados_evidencia.get("titulo", ""),
+            "preco": dados_evidencia.get("preco", ""),
+            "fonte": dados_evidencia.get("fonte", ""),
+            "caminho_metadata": evidencia.get("metadata", ""),
+            "caminho_html": evidencia.get("html", ""),
+            "caminho_screenshot": evidencia.get("screenshot", ""),
+            "data_captura": dados_evidencia.get("data_captura", ""),
+        })
 
     grupo = cesta.setdefault(
         item_uid,
@@ -178,6 +212,7 @@ def adicionar_preco(dados):
             "numero": numero_item,
             "descricao": item_pesquisado,
             "quantidade": quantidade_item,
+            "unidade": unidade_item,
             "resultados_alvo": resultados_alvo,
             "metodologia": _metodologia_padrao(),
             "status": "em_edicao",
@@ -283,6 +318,8 @@ def _resumo_valores(resultados, metodologia):
 
     media = statistics.mean(valores)
     mediana = statistics.median(valores)
+    desvio = statistics.pstdev(valores) if len(valores) > 1 else 0
+    coeficiente = (desvio / media * 100) if media else 0
     menor = min(valores)
     maior = max(valores)
     resumo = {
@@ -291,6 +328,8 @@ def _resumo_valores(resultados, metodologia):
         "mediana": round(mediana, 2),
         "menor": round(menor, 2),
         "maior": round(maior, 2),
+        "desvio_padrao": round(desvio, 2),
+        "coeficiente_variacao": round(coeficiente, 2),
         "metodologia_formacao_preco": metodologia,
     }
     resumo["valor_final"] = {

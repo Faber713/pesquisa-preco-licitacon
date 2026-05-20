@@ -1,5 +1,6 @@
 from datetime import datetime
 
+from search.price_validation import gerar_justificativa_automatica
 from web.services.cesta_service import agrupar_cesta_por_item, obter_cesta, resumo_cesta
 
 
@@ -32,6 +33,12 @@ def gerar_dossie_contexto(*, servidor_responsavel="", filtros=None):
         considerados, desconsiderados = _separar_precos(grupo["precos"])
         resumo = dict(grupo["resumo"])
         resumo["metodologia_label"] = _metodologia_label(resumo.get("metodologia_formacao_preco"))
+        fontes_item = [preco.get("fonte", "") for preco in grupo["precos"]]
+        justificativa = gerar_justificativa_automatica(
+            fontes_item,
+            total_precos=len(considerados),
+            estatisticas=resumo,
+        )
         itens.append({
             "numero": grupo.get("numero") or indice,
             "descricao": grupo.get("descricao"),
@@ -42,8 +49,10 @@ def gerar_dossie_contexto(*, servidor_responsavel="", filtros=None):
             "considerados_qtd": len(considerados),
             "desconsiderados_qtd": len(desconsiderados),
             "resumo": resumo,
+            "justificativa_automatica": justificativa,
             "precos_considerados": considerados,
             "precos_desconsiderados": desconsiderados,
+            "evidencias": [preco.get("evidencia_web") for preco in grupo["precos"] if preco.get("evidencia_web")],
         })
 
     resumo = resumo_cesta(cesta)
@@ -67,5 +76,10 @@ def gerar_dossie_contexto(*, servidor_responsavel="", filtros=None):
             "limite_resultados": "Conforme parametros da pesquisa",
         },
         "resumo": resumo,
+        "justificativa_automatica": gerar_justificativa_automatica(
+            fontes,
+            total_precos=resumo.get("considerados", 0),
+            estatisticas=resumo,
+        ),
         "itens": itens,
     }

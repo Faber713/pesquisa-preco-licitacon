@@ -1,5 +1,6 @@
 import re
 import unicodedata
+from functools import lru_cache
 
 from config.app_settings import PALAVRAS_FRACAS
 
@@ -27,6 +28,7 @@ def colapsar_espacos(texto):
     return re.sub(r"\s+", " ", str(texto or "")).strip()
 
 
+@lru_cache(maxsize=20000)
 def normalizar_texto(texto):
     texto = remover_acentos(texto).lower()
     texto = re.sub(r"[^a-z0-9\s]", " ", texto)
@@ -43,4 +45,3 @@ def tokens_relevantes(texto, stopwords=None, tamanho_minimo=3):
         for token in normalizar_texto(texto).split()
         if len(token) >= tamanho_minimo and token not in stopwords
     ]
-

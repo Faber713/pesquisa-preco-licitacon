@@ -1,8 +1,8 @@
-from flask import Blueprint, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, jsonify, redirect, render_template, request, session, url_for
 
 from auth.decorators import login_required
 from auth.session_manager import usuario_atual
-from storage.app_storage import registrar_auditoria
+from storage.app_storage import obter_cotacao_operacional, registrar_auditoria, salvar_workspace_cotacao
 from web.services.cesta_service import (
     adicionar_preco,
     agrupar_cesta_por_item,
@@ -20,6 +20,7 @@ from web.services.cesta_service import (
 
 
 cesta_bp = Blueprint("cesta", __name__, url_prefix="/cesta")
+COTACAO_ATIVA_KEY = "cotacao_operacional_ativa_id"
 
 
 def _voltar():
@@ -55,10 +56,45 @@ def _resposta_cesta():
     })
 
 
+def _autosave_resultado_cotacao(dados, selecionado=True):
+    cotacao_id = session.get(COTACAO_ATIVA_KEY)
+    if not cotacao_id:
+        return
+    usuario = usuario_atual() or {}
+    cotacao = obter_cotacao_operacional(cotacao_id, usuario.get("id"))
+    if not cotacao:
+        return
+    workspace = cotacao.get("workspace") or {}
+    item_uid = dados.get("item_uid", "")
+    resultado_uid = dados.get("resultado_uid") or dados.get("id") or ""
+    for item in workspace.get("itens", []):
+        if item.get("item_uid") != item_uid:
+            continue
+        selecionados = item.setdefault("resultados_selecionados", [])
+        if selecionado:
+            payload = dict(dados)
+            payload["id"] = resultado_uid
+            if not any(r.get("id") == resultado_uid for r in selecionados):
+                selecionados.append(payload)
+            for resultado in item.get("resultados", []):
+                if resultado.get("resultado_uid") == resultado_uid:
+                    resultado["selecionado"] = True
+        else:
+            item["resultados_selecionados"] = [
+                r for r in selecionados if r.get("id") != resultado_uid
+            ]
+            for resultado in item.get("resultados", []):
+                if resultado.get("resultado_uid") == resultado_uid:
+                    resultado["selecionado"] = False
+        salvar_workspace_cotacao(cotacao_id, workspace, item_uid, usuario.get("id"))
+        return
+
+
 @cesta_bp.post("/adicionar")
 @login_required
 def adicionar():
     adicionar_preco(request.form)
+    _autosave_resultado_cotacao(request.form, True)
     usuario = usuario_atual()
     if usuario:
         registrar_auditoria(usuario.get("id"), "cesta_adicionar", "cesta", request.form.get("item_uid", ""), dict(request.form), request.remote_addr)
@@ -72,6 +108,7 @@ def remover():
         remover_preco(request.form.get("id", ""), request.form.get("item_uid", ""))
     else:
         remover_preco_por_dados(request.form)
+    _autosave_resultado_cotacao(request.form, False)
     return _resposta_cesta()
 
 
